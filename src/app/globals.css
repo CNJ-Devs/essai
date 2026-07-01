@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+:root {
+  --app-bg: #f5f7f3;
+  --panel: #ffffff;
+  --soft: #eef2ee;
+  --line: #d9dfd8;
+  --ink: #1d2824;
+  --ink-2: #304039;
+  --muted: #68746f;
+  --accent: #1d8a76;
+  --accent-soft: #e3f3ef;
+  --blue: #2f6faa;
+  --blue-soft: #e7f0f8;
+  --warning: #9a5a12;
+  --warning-soft: #fff0d6;
+  --success: #14705c;
+  --success-soft: #ddf4ed;
+  --danger: #ba3f35;
+  --danger-2: #9e332b;
+  --danger-soft: #fde7e4;
+  --background: var(--app-bg);
+  --foreground: var(--ink);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--app-bg);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  letter-spacing: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  letter-spacing: 0;
+}
+
+.field {
+  min-height: 44px;
+  width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: white;
+  padding: 10px 12px;
+  color: var(--ink);
+  outline: none;
+}
+
+.field:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.page-title {
+  font-size: clamp(1.65rem, 2.2vw, 2.25rem);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.section-title {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  box-shadow: 0 1px 2px rgba(29, 40, 36, 0.04);
+}

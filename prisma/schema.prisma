@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String     @id @default(cuid())
+  email     String?    @unique
+  name      String?
+  fragments Fragment[]
+  schemes   Scheme[]
+  laws      Law[]      @relation("OwnedLaws")
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  @@map("user")
+}
+
+model Fragment {
+  id          String      @id @default(cuid())
+  userId      String      @map("user_id")
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  titleSource TitleSource @default(user) @map("title_source")
+  content     String
+  drafts      Draft[]
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  @@index([userId, createdAt])
+  @@map("fragment")
+}
+
+model Scheme {
+  id          String      @id @default(cuid())
+  userId      String      @map("user_id")
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String
+  laws        SchemeLaw[]
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  @@index([userId, createdAt])
+  @@map("scheme")
+}
+
+model Law {
+  id          String      @id @default(cuid())
+  ownerUserId String      @map("owner_user_id")
+  owner       User        @relation("OwnedLaws", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  name        String
+  prompt      String
+  tags        String[]    @default([])
+  visibility  Visibility  @default(private)
+  sourceLawId String?     @map("source_law_id")
+  version     Int         @default(1)
+  schemes     SchemeLaw[]
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  @@index([ownerUserId, createdAt])
+  @@map("law")
+}
+
+model SchemeLaw {
+  id         String   @id @default(cuid())
+  schemeId   String   @map("scheme_id")
+  scheme     Scheme   @relation(fields: [schemeId], references: [id], onDelete: Cascade)
+  lawId      String   @map("law_id")
+  law        Law      @relation(fields: [lawId], references: [id], onDelete: Cascade)
+  orderIndex Int      @map("order_index")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([schemeId, lawId])
+  @@index([schemeId, orderIndex])
+  @@map("scheme_law")
+}
+
+model Draft {
+  id             String         @id @default(cuid())
+  fragmentId     String         @map("fragment_id")
+  fragment       Fragment       @relation(fields: [fragmentId], references: [id], onDelete: Cascade)
+  schemeSnapshot Json           @map("scheme_snapshot")
+  versions       DraftVersion[]
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  @@index([fragmentId, createdAt])
+  @@map("draft")
+}
+
+model DraftVersion {
+  id                    String             @id @default(cuid())
+  draftId               String             @map("draft_id")
+  draft                 Draft              @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  versionNo             Int                @map("version_no")
+  status                DraftStatus
+  source                DraftVersionSource
+  content               String             @default("")
+  errorMessage          String?            @map("error_message")
+  model                 String?
+  promptTemplateVersion String             @default("v1") @map("prompt_template_version")
+  createdAt             DateTime           @default(now()) @map("created_at")
+  updatedAt             DateTime           @updatedAt @map("updated_at")
+
+  @@unique([draftId, versionNo])
+  @@index([draftId, createdAt])
+  @@map("draft_version")
+}
+
+enum TitleSource {
+  user
+  ai
+}
+
+enum Visibility {
+  private
+  public
+}
+
+enum DraftStatus {
+  brewing
+  completed
+  failed
+}
+
+enum DraftVersionSource {
+  ai
+  manual_edit
+}
