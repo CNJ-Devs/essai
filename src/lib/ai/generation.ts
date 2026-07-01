@@ -1,5 +1,9 @@
 import { generateText } from "ai";
-import { PROMPT_TEMPLATE_VERSION, buildDraftPrompt } from "@/lib/ai/prompt";
+import {
+  PROMPT_TEMPLATE_VERSION,
+  buildDraftPrompt,
+  buildDraftRevisionPrompt,
+} from "@/lib/ai/prompt";
 import type { Fragment, SchemeSnapshot } from "@/lib/types";
 
 const DEFAULT_MODEL = "openai/gpt-5.5";
@@ -59,6 +63,51 @@ export async function generateDraftContent(
   };
 }
 
+export async function reviseDraftContent({
+  fragment,
+  snapshot,
+  currentDraft,
+  instruction,
+}: {
+  fragment: Fragment;
+  snapshot: SchemeSnapshot;
+  currentDraft: string;
+  instruction: string;
+}) {
+  const model = process.env.AI_MODEL ?? DEFAULT_MODEL;
+
+  if (!canUseGateway()) {
+    return {
+      content: buildFallbackRevision({
+        fragment,
+        snapshot,
+        currentDraft,
+        instruction,
+      }),
+      model: "local-fallback",
+      promptTemplateVersion: `${PROMPT_TEMPLATE_VERSION}-revision`,
+    };
+  }
+
+  const { text } = await generateText({
+    model,
+    instructions:
+      "你是 EssAI 的成稿改写引擎。你只输出改写后的完整中文稿件，不输出解释、计划或聊天回复。",
+    prompt: buildDraftRevisionPrompt({
+      fragment,
+      snapshot,
+      currentDraft,
+      instruction,
+    }),
+  });
+
+  return {
+    content: text,
+    model,
+    promptTemplateVersion: `${PROMPT_TEMPLATE_VERSION}-revision`,
+  };
+}
+
 function buildFallbackDraft(fragment: Fragment, snapshot: SchemeSnapshot) {
   const lawList =
     snapshot.laws.length > 0
@@ -95,4 +144,34 @@ ${fragment.content}
 
 已参考法则
 ${lawList}`;
+}
+
+function buildFallbackRevision({
+  fragment,
+  snapshot,
+  instruction,
+}: {
+  fragment: Fragment;
+  snapshot: SchemeSnapshot;
+  currentDraft: string;
+  instruction: string;
+}) {
+  return `标题建议
+${fragment.title}
+
+内容定位
+基于「${snapshot.schemeName}」继续打磨这一版稿件，已吸收你的修改意见。
+
+核心表达
+${fragment.content}
+
+正文成稿
+这是一版围绕「${fragment.title}」重新打磨后的成稿。
+
+它会保留原始碎片里最重要的判断，同时把表达往这个方向收拢：${instruction.trim()}
+
+开头要更快进入现场，让读者或观众立刻知道这条内容和自己有什么关系。中段围绕一个清晰判断展开，不把话说散，也不把语气做成说教。结尾把观点收回来，留下一个能继续思考或行动的落点。
+
+收束
+如果这一版继续打磨，可以再补一个更具体的场景，或者把节奏压得更适合最终发布的平台。`;
 }

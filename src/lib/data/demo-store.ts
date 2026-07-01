@@ -1,7 +1,17 @@
 import { randomUUID } from "crypto";
-import { generateDraftContent, generateFragmentTitle } from "@/lib/ai/generation";
+import {
+  generateDraftContent,
+  generateFragmentTitle,
+  reviseDraftContent,
+} from "@/lib/ai/generation";
 import { createSeedState, DEMO_USER_ID } from "@/lib/data/seed";
 import type { DemoState } from "@/lib/data/store-types";
+import {
+  createRevisionDraftSnapshot,
+  createSchemeDraftSnapshot,
+  getSchemeSnapshotFromDraftSnapshot,
+  parseDraftVersionSnapshot,
+} from "@/lib/draft-snapshot";
 import type {
   Draft,
   DraftVersion,
@@ -14,11 +24,18 @@ import type {
 
 const globalForStore = globalThis as unknown as {
   essaiDemoState?: DemoState;
+  essaiDemoFixtureVersion?: number;
 };
 
+const DEMO_FIXTURE_VERSION = 4;
+
 function state() {
-  if (!globalForStore.essaiDemoState) {
+  if (
+    !globalForStore.essaiDemoState ||
+    (globalForStore.essaiDemoFixtureVersion ?? 0) < DEMO_FIXTURE_VERSION
+  ) {
     globalForStore.essaiDemoState = createSeedState();
+    globalForStore.essaiDemoFixtureVersion = DEMO_FIXTURE_VERSION;
   }
 
   return globalForStore.essaiDemoState;
@@ -35,6 +52,23 @@ function createId(prefix: string) {
 function sortNewest<T extends { createdAt: string }>(items: T[]) {
   return [...items].sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+}
+
+function draftLatestVersionTime(draft: Draft) {
+  const versionTimes = draft.versions.map((version) =>
+    new Date(version.updatedAt || version.createdAt).getTime(),
+  );
+
+  return Math.max(
+    new Date(draft.updatedAt || draft.createdAt).getTime(),
+    ...versionTimes,
+  );
+}
+
+function sortDraftsByLatestVersion(drafts: Draft[]) {
+  return [...drafts].sort(
+    (a, b) => draftLatestVersionTime(b) - draftLatestVersionTime(a),
   );
 }
 
@@ -57,7 +91,7 @@ export async function getFragmentPageData(fragmentId: string) {
     fragment,
     schemes: sortNewest(store.schemes),
     laws: sortNewest(store.laws),
-    drafts: sortNewest(
+    drafts: sortDraftsByLatestVersion(
       store.drafts.filter((draft) => draft.fragmentId === fragmentId),
     ),
   };
@@ -69,8 +103,17 @@ export async function getDraftPageData(draftId: string) {
   const fragment = draft
     ? store.fragments.find((item) => item.id === draft.fragmentId) ?? null
     : null;
+  const scheme = draft
+    ? store.schemes.find((item) => item.id === draft.schemeSnapshot.schemeId) ??
+      null
+    : null;
+  const laws = scheme
+    ? scheme.lawIds
+        .map((lawId) => store.laws.find((law) => law.id === lawId))
+        .filter((law): law is Law => Boolean(law))
+    : [];
 
-  return { draft, fragment };
+  return { draft, fragment, scheme, laws };
 }
 
 export async function getSchemePageData(schemeId: string) {
@@ -91,36 +134,51 @@ export async function getLawPageData(lawId: string) {
 }
 
 export async function createFragmentWithDrafts(input: {
-  title?: string;
   content: string;
   selections: SchemeSelection[];
 }) {
   const store = state();
   const createdAt = now();
-  const title = input.title?.trim()
-    ? input.title.trim()
-    : await generateFragmentTitle(input.content);
-
   const fragment: Fragment = {
     id: createId("fragment"),
     userId: DEMO_USER_ID,
-    title,
-    titleSource: input.title?.trim() ? "user" : "ai",
+    title: "New Piece",
+    titleSource: "ai",
     content: input.content.trim(),
     createdAt,
     updatedAt: createdAt,
   };
 
   store.fragments.unshift(fragment);
+
+  fragment.title = await generateFragmentTitle(input.content);
+  fragment.updatedAt = now();
+
   await createDraftsForFragment(fragment.id, input.selections);
 
   return fragment;
 }
 
-export async function updateFragment(input: {
+export async function updateFragmentContent(input: {
+  id: string;
+  content: string;
+}) {
+  const store = state();
+  const fragment = store.fragments.find((item) => item.id === input.id);
+
+  if (!fragment) {
+    return null;
+  }
+
+  fragment.content = input.content.trim();
+  fragment.updatedAt = now();
+
+  return fragment;
+}
+
+export async function updateFragmentTitle(input: {
   id: string;
   title: string;
-  content: string;
 }) {
   const store = state();
   const fragment = store.fragments.find((item) => item.id === input.id);
@@ -131,10 +189,15 @@ export async function updateFragment(input: {
 
   fragment.title = input.title.trim();
   fragment.titleSource = "user";
-  fragment.content = input.content.trim();
   fragment.updatedAt = now();
 
   return fragment;
+}
+
+export async function deleteFragment(id: string) {
+  const store = state();
+  store.fragments = store.fragments.filter((fragment) => fragment.id !== id);
+  store.drafts = store.drafts.filter((draft) => draft.fragmentId !== id);
 }
 
 export async function createDraftsForFragment(
@@ -157,24 +220,33 @@ export async function createDraftsForFragment(
       continue;
     }
 
-    const timestamp = now();
     const snapshot = createSchemeSnapshot(scheme);
-    const draft: Draft = {
-      id: createId("draft"),
-      fragmentId,
-      schemeSnapshot: snapshot,
-      versions: [],
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
+    let draft = store.drafts.find(
+      (item) =>
+        item.fragmentId === fragmentId &&
+        item.schemeSnapshot.schemeId === selection.schemeId,
+    );
 
-    store.drafts.unshift(draft);
+    if (!draft) {
+      const timestamp = now();
+      draft = {
+        id: createId("draft"),
+        fragmentId,
+        schemeSnapshot: snapshot,
+        versions: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+
+      store.drafts.unshift(draft);
+    }
 
     for (let index = 0; index < selection.count; index += 1) {
       const version = await createAiDraftVersion(
         fragment,
         draft,
         draft.versions.length + 1,
+        snapshot,
       );
       draft.versions.push(version);
       draft.updatedAt = version.updatedAt;
@@ -197,11 +269,61 @@ export async function retryDraft(draftId: string) {
     return null;
   }
 
+  const snapshot = createCurrentSnapshotForDraft(store, draft);
   const version = await createAiDraftVersion(
     fragment,
     draft,
     draft.versions.length + 1,
+    snapshot,
   );
+
+  draft.versions.push(version);
+  draft.updatedAt = version.updatedAt;
+
+  return version;
+}
+
+export async function retryDraftFromSnapshot(input: {
+  draftId: string;
+  versionId: string;
+}) {
+  const store = state();
+  const draft = store.drafts.find((item) => item.id === input.draftId);
+  const fragment = draft
+    ? store.fragments.find((item) => item.id === draft.fragmentId)
+    : null;
+  const sourceVersion = draft?.versions.find(
+    (version) => version.id === input.versionId,
+  );
+
+  if (!draft || !fragment || !sourceVersion) {
+    return null;
+  }
+
+  const parsedSnapshot = parseDraftVersionSnapshot(sourceVersion.snapshot);
+
+  if (!parsedSnapshot.ok) {
+    return null;
+  }
+
+  const version =
+    parsedSnapshot.data.type === "scheme"
+      ? await createAiDraftVersion(
+          fragment,
+          draft,
+          draft.versions.length + 1,
+          parsedSnapshot.data.content,
+        )
+      : await createAiRevisionDraftVersion({
+          draft,
+          fragment,
+          versionNo: draft.versions.length + 1,
+          sourceVersionId: parsedSnapshot.data.content.sourceVersionId,
+          sourceVersionNo: parsedSnapshot.data.content.sourceVersionNo,
+          sourceContent: parsedSnapshot.data.content.sourceContent,
+          instruction: parsedSnapshot.data.content.instruction,
+          schemeSnapshot: parsedSnapshot.data.content.schemeSnapshot,
+        });
 
   draft.versions.push(version);
   draft.updatedAt = version.updatedAt;
@@ -211,6 +333,7 @@ export async function retryDraft(draftId: string) {
 
 export async function saveManualDraftVersion(input: {
   draftId: string;
+  sourceVersionId?: string;
   content: string;
 }) {
   const store = state();
@@ -220,6 +343,9 @@ export async function saveManualDraftVersion(input: {
     return null;
   }
 
+  const sourceVersion = draft.versions.find(
+    (version) => version.id === input.sourceVersionId,
+  );
   const timestamp = now();
   const version: DraftVersion = {
     id: createId("draft_version"),
@@ -231,6 +357,10 @@ export async function saveManualDraftVersion(input: {
     errorMessage: null,
     model: null,
     promptTemplateVersion: "manual",
+    snapshot: createSchemeDraftSnapshot(
+      getSchemeSnapshotFromDraftSnapshot(sourceVersion?.snapshot) ??
+        createCurrentSnapshotForDraft(store, draft),
+    ),
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -241,9 +371,48 @@ export async function saveManualDraftVersion(input: {
   return version;
 }
 
+export async function reviseDraftFromInstruction(input: {
+  draftId: string;
+  versionId: string;
+  instruction: string;
+}) {
+  const store = state();
+  const draft = store.drafts.find((item) => item.id === input.draftId);
+  const fragment = draft
+    ? store.fragments.find((item) => item.id === draft.fragmentId)
+    : null;
+  const sourceVersion = draft?.versions.find(
+    (version) => version.id === input.versionId,
+  );
+
+  if (!draft || !fragment || !sourceVersion) {
+    return null;
+  }
+
+  const schemeSnapshot =
+    getSchemeSnapshotFromDraftSnapshot(sourceVersion.snapshot) ??
+    createCurrentSnapshotForDraft(store, draft);
+  const version = await createAiRevisionDraftVersion({
+    draft,
+    fragment,
+    versionNo: draft.versions.length + 1,
+    sourceVersionId: sourceVersion.id,
+    sourceVersionNo: sourceVersion.versionNo,
+    sourceContent: sourceVersion.content,
+    instruction: input.instruction.trim(),
+    schemeSnapshot,
+  });
+
+  draft.versions.push(version);
+  draft.updatedAt = version.updatedAt;
+
+  return version;
+}
+
 export async function createScheme(input: {
   name: string;
   description: string;
+  lawIds?: string[];
 }) {
   const store = state();
   const timestamp = now();
@@ -252,7 +421,7 @@ export async function createScheme(input: {
     userId: DEMO_USER_ID,
     name: input.name.trim(),
     description: input.description.trim(),
-    lawIds: [],
+    lawIds: input.lawIds ?? [],
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -287,6 +456,23 @@ export async function updateScheme(input: {
 export async function deleteScheme(id: string) {
   const store = state();
   store.schemes = store.schemes.filter((scheme) => scheme.id !== id);
+}
+
+export async function removeLawFromScheme(input: {
+  schemeId: string;
+  lawId: string;
+}) {
+  const store = state();
+  const scheme = store.schemes.find((item) => item.id === input.schemeId);
+
+  if (!scheme) {
+    return null;
+  }
+
+  scheme.lawIds = scheme.lawIds.filter((lawId) => lawId !== input.lawId);
+  scheme.updatedAt = now();
+
+  return scheme;
 }
 
 export async function createLaw(input: {
@@ -350,7 +536,13 @@ export async function deleteLaw(id: string) {
 }
 
 function createSchemeSnapshot(scheme: Scheme): SchemeSnapshot {
-  const store = state();
+  return createSchemeSnapshotFromStore(state(), scheme);
+}
+
+function createSchemeSnapshotFromStore(
+  store: DemoState,
+  scheme: Scheme,
+): SchemeSnapshot {
   const timestamp = now();
   const laws = scheme.lawIds
     .map((lawId) => store.laws.find((law) => law.id === lawId))
@@ -359,7 +551,6 @@ function createSchemeSnapshot(scheme: Scheme): SchemeSnapshot {
       lawId: law.id,
       name: law.name,
       prompt: law.prompt,
-      version: law.version,
     }));
 
   return {
@@ -371,15 +562,26 @@ function createSchemeSnapshot(scheme: Scheme): SchemeSnapshot {
   };
 }
 
+function createCurrentSnapshotForDraft(store: DemoState, draft: Draft) {
+  const scheme = store.schemes.find(
+    (item) => item.id === draft.schemeSnapshot.schemeId,
+  );
+
+  return scheme
+    ? createSchemeSnapshotFromStore(store, scheme)
+    : draft.schemeSnapshot;
+}
+
 async function createAiDraftVersion(
   fragment: Fragment,
   draft: Draft,
   versionNo: number,
+  snapshot: SchemeSnapshot,
 ): Promise<DraftVersion> {
   const timestamp = now();
 
   try {
-    const result = await generateDraftContent(fragment, draft.schemeSnapshot);
+    const result = await generateDraftContent(fragment, snapshot);
 
     return {
       id: createId("draft_version"),
@@ -391,6 +593,7 @@ async function createAiDraftVersion(
       errorMessage: null,
       model: result.model,
       promptTemplateVersion: result.promptTemplateVersion,
+      snapshot: createSchemeDraftSnapshot(snapshot),
       createdAt: timestamp,
       updatedAt: now(),
     };
@@ -406,6 +609,77 @@ async function createAiDraftVersion(
         error instanceof Error ? error.message : "出稿失败，请稍后再试。",
       model: process.env.AI_MODEL ?? "openai/gpt-5.5",
       promptTemplateVersion: "v1",
+      snapshot: createSchemeDraftSnapshot(snapshot),
+      createdAt: timestamp,
+      updatedAt: now(),
+    };
+  }
+}
+
+async function createAiRevisionDraftVersion({
+  fragment,
+  draft,
+  versionNo,
+  sourceVersionId,
+  sourceVersionNo,
+  sourceContent,
+  instruction,
+  schemeSnapshot,
+}: {
+  fragment: Fragment;
+  draft: Draft;
+  versionNo: number;
+  sourceVersionId: string;
+  sourceVersionNo: number;
+  sourceContent: string;
+  instruction: string;
+  schemeSnapshot: SchemeSnapshot;
+}): Promise<DraftVersion> {
+  const timestamp = now();
+  const snapshot = createRevisionDraftSnapshot({
+    sourceVersionId,
+    sourceVersionNo,
+    sourceContent,
+    instruction: instruction.trim(),
+    schemeSnapshot,
+    snapshottedAt: timestamp,
+  });
+
+  try {
+    const result = await reviseDraftContent({
+      fragment,
+      snapshot: schemeSnapshot,
+      currentDraft: sourceContent,
+      instruction: instruction.trim(),
+    });
+
+    return {
+      id: createId("draft_version"),
+      draftId: draft.id,
+      versionNo,
+      status: "completed",
+      source: "ai_revision",
+      content: result.content,
+      errorMessage: null,
+      model: result.model,
+      promptTemplateVersion: result.promptTemplateVersion,
+      snapshot,
+      createdAt: timestamp,
+      updatedAt: now(),
+    };
+  } catch (error) {
+    return {
+      id: createId("draft_version"),
+      draftId: draft.id,
+      versionNo,
+      status: "failed",
+      source: "ai_revision",
+      content: "",
+      errorMessage:
+        error instanceof Error ? error.message : "改稿失败，请稍后再试。",
+      model: process.env.AI_MODEL ?? "openai/gpt-5.5",
+      promptTemplateVersion: "v1-revision",
+      snapshot,
       createdAt: timestamp,
       updatedAt: now(),
     };

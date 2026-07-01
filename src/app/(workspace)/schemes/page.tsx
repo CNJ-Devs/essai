@@ -1,78 +1,74 @@
-import Link from "next/link";
-import { FilePenLine } from "lucide-react";
-import { createSchemeAction } from "@/app/actions";
-import { FormSubmitButton } from "@/components/form-submit-button";
-import { getWorkspaceData } from "@/lib/data/demo-store";
-import { formatDate, summarize } from "@/lib/utils";
+import Link from "next/link"
+import { createSchemeAction, deleteSchemeAction } from "@/app/actions"
+import { ConfirmAction } from "@/components/confirm-action"
+import { SchemeEditorDialog } from "@/components/scheme-editor-dialog"
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { getWorkspaceData } from "@/lib/data/demo-store"
+import { formatDate, summarize } from "@/lib/utils"
 
 export default async function SchemesPage() {
-  const { schemes, laws } = await getWorkspaceData();
+  const { schemes, laws } = await getWorkspaceData()
 
   return (
-    <div className="space-y-6">
-      <header>
-        <p className="text-sm font-medium text-[var(--accent)]">方案簿</p>
-        <h1 className="page-title">出稿方案</h1>
+    <div className="flex flex-col gap-6">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="max-w-2xl text-xl font-medium leading-snug text-pretty sm:text-2xl">
+            给灵感一条路，让同一种表达方式可以反复被调用。
+          </h1>
+        </div>
+        <SchemeEditorDialog action={createSchemeAction} laws={laws} />
       </header>
 
-      <form action={createSchemeAction} className="card grid gap-4 p-4 lg:grid-cols-[260px_minmax(0,1fr)_auto]">
-        <div>
-          <label className="block text-sm font-medium" htmlFor="scheme-name">
-            出稿方案名称
-          </label>
-          <input id="scheme-name" name="name" className="field mt-2" required />
-        </div>
-        <div>
-          <label className="block text-sm font-medium" htmlFor="scheme-description">
-            方案说明
-          </label>
-          <textarea
-            id="scheme-description"
-            name="description"
-            className="field mt-2 min-h-24 resize-y"
-            required
-          />
-        </div>
-        <div className="flex items-end">
-          <FormSubmitButton icon="plus" title="新建出稿方案">
-            新建出稿方案
-          </FormSubmitButton>
-        </div>
-      </form>
-
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {schemes.map((scheme) => {
-          const schemeLaws = scheme.lawIds
-            .map((lawId) => laws.find((law) => law.id === lawId))
-            .filter(Boolean);
-
-          return (
+      <section className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(250px,1fr))]">
+        {schemes.map((scheme) => (
+          <Card
+            key={scheme.id}
+            className="h-full min-h-48 transition-colors hover:ring-primary/25"
+          >
+            <CardHeader>
+              <Link
+                href={`/schemes/${scheme.id}`}
+                className="min-w-0 rounded-md focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+              >
+                <CardTitle className="line-clamp-2 transition-colors hover:text-primary">
+                  {scheme.name}
+                </CardTitle>
+              </Link>
+            </CardHeader>
             <Link
-              key={scheme.id}
               href={`/schemes/${scheme.id}`}
-              className="card block p-4 transition-colors hover:border-[var(--accent)]"
+              className="flex flex-1 flex-col focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             >
-              <div className="mb-3 flex items-start gap-3">
-                <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md bg-[var(--blue-soft)] text-[var(--blue)]">
-                  <FilePenLine size={18} aria-hidden="true" />
-                </span>
-                <div className="min-w-0">
-                  <h2 className="font-semibold">{scheme.name}</h2>
-                  <p className="mt-1 text-xs text-[var(--muted)]">
-                    {formatDate(scheme.updatedAt)}
-                  </p>
-                </div>
-              </div>
-              <p className="text-sm leading-6 text-[var(--muted)]">
-                {summarize(scheme.description, 116)}
-              </p>
-              <p className="mt-4 text-sm text-[var(--muted)]">
-                已绑定 {schemeLaws.length} 条法则
-              </p>
+              <CardContent className="flex-1">
+                <p className="line-clamp-5 text-sm leading-6 text-muted-foreground">
+                  {summarize(scheme.description, 180)}
+                </p>
+              </CardContent>
             </Link>
-          );
-        })}
+            <CardFooter className="justify-between gap-2">
+              <span className="text-xs text-muted-foreground">
+                {formatDate(scheme.updatedAt)}
+              </span>
+              <ConfirmAction
+                action={deleteSchemeAction}
+                hiddenFields={{ id: scheme.id }}
+                title={`删除「${scheme.name}」`}
+                subtitle={`「${scheme.name}」会从方案簿中移除。已经生成的旧成稿不会受影响，但之后不能再选择这个方案。`}
+                confirmLabel="删除"
+                triggerSize="icon-xs"
+                triggerClassName="text-muted-foreground hover:text-destructive"
+              />
+            </CardFooter>
+          </Card>
+        ))}
       </section>
     </div>
-  );
+  )
 }

@@ -32,6 +32,7 @@ export const zhCN = {
   },
   source: {
     ai: "AI 出稿",
+    ai_revision: "AI 改稿",
     manual_edit: "手动编辑",
   },
 } as const;
@@ -70,6 +71,7 @@ export const enUS = {
   },
   source: {
     ai: "AI Draft",
+    ai_revision: "AI Revision",
     manual_edit: "Manual Edit",
   },
 } as const;

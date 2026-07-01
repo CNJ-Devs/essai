@@ -1,98 +1,78 @@
-import Link from "next/link";
-import { BookOpenText } from "lucide-react";
-import { createLawAction } from "@/app/actions";
-import { FormSubmitButton } from "@/components/form-submit-button";
-import { getWorkspaceData } from "@/lib/data/demo-store";
-import { formatDate, summarize } from "@/lib/utils";
+import Link from "next/link"
+import { createLawAction, deleteLawAction } from "@/app/actions"
+import { ConfirmAction } from "@/components/confirm-action"
+import { LawEditorDialog } from "@/components/law-editor-dialog"
+import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { getWorkspaceData } from "@/lib/data/demo-store"
+import { formatDate, summarize } from "@/lib/utils"
 
 export default async function LawsPage() {
-  const { laws } = await getWorkspaceData();
+  const { laws } = await getWorkspaceData()
 
   return (
-    <div className="space-y-6">
-      <header>
-        <p className="text-sm font-medium text-[var(--accent)]">创作法典</p>
-        <h1 className="page-title">创作法则</h1>
+    <div className="flex flex-col gap-6">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="max-w-2xl text-xl font-medium leading-snug text-pretty sm:text-2xl">
+            把你的表达经验收成条文，让每一次出稿都有迹可循。
+          </h1>
+        </div>
+        <LawEditorDialog action={createLawAction} />
       </header>
 
-      <form action={createLawAction} className="card grid gap-4 p-4 xl:grid-cols-[240px_minmax(0,1fr)_180px_auto]">
-        <div>
-          <label className="block text-sm font-medium" htmlFor="law-name">
-            法则名称
-          </label>
-          <input id="law-name" name="name" className="field mt-2" required />
-        </div>
-        <div>
-          <label className="block text-sm font-medium" htmlFor="law-prompt">
-            法则 prompt
-          </label>
-          <textarea
-            id="law-prompt"
-            name="prompt"
-            className="field mt-2 min-h-24 resize-y"
-            required
-          />
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-          <div>
-            <label className="block text-sm font-medium" htmlFor="law-tags">
-              标签
-            </label>
-            <input id="law-tags" name="tags" className="field mt-2" />
-          </div>
-          <div>
-            <label className="block text-sm font-medium" htmlFor="visibility">
-              可见性
-            </label>
-            <select id="visibility" name="visibility" className="field mt-2" defaultValue="private">
-              <option value="private">私有</option>
-              <option value="public">公开</option>
-            </select>
-          </div>
-        </div>
-        <div className="flex items-end">
-          <FormSubmitButton icon="plus" title="收录法则">
-            收录法则
-          </FormSubmitButton>
-        </div>
-      </form>
-
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <section className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(250px,1fr))]">
         {laws.map((law) => (
-          <Link
+          <Card
             key={law.id}
-            href={`/laws/${law.id}`}
-            className="card block p-4 transition-colors hover:border-[var(--accent)]"
+            className="h-full min-h-48 transition-colors hover:ring-primary/25"
           >
-            <div className="mb-3 flex items-start justify-between gap-3">
-              <div className="flex items-start gap-3">
-                <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md bg-[var(--accent-soft)] text-[var(--accent)]">
-                  <BookOpenText size={18} aria-hidden="true" />
-                </span>
-                <div>
-                  <h2 className="font-semibold">{law.name}</h2>
-                  <p className="mt-1 text-xs text-[var(--muted)]">
-                    v{law.version} · {formatDate(law.updatedAt)}
-                  </p>
+            <CardHeader>
+              <Link
+                href={`/laws/${law.id}`}
+                className="min-w-0 rounded-md focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+              >
+                <CardTitle className="line-clamp-2 transition-colors hover:text-primary">
+                  {law.name}
+                </CardTitle>
+              </Link>
+              {law.tags.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {law.tags.slice(0, 3).map((tag) => (
+                    <Badge key={tag} variant="secondary">
+                      {tag}
+                    </Badge>
+                  ))}
                 </div>
-              </div>
-              <span className="rounded-md bg-[var(--soft)] px-2 py-1 text-xs text-[var(--muted)]">
-                {law.visibility === "private" ? "私有" : "公开"}
+              ) : null}
+            </CardHeader>
+            <Link
+              href={`/laws/${law.id}`}
+              className="flex flex-1 flex-col focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+            >
+              <CardContent className="flex-1">
+                <p className="line-clamp-5 text-sm leading-6 text-muted-foreground">
+                  {summarize(law.prompt, 160)}
+                </p>
+              </CardContent>
+            </Link>
+            <CardFooter className="justify-between gap-2">
+              <span className="text-xs text-muted-foreground">
+                {formatDate(law.updatedAt)}
               </span>
-            </div>
-            <p className="text-sm leading-6 text-[var(--muted)]">
-              {summarize(law.prompt, 116)}
-            </p>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {law.tags.map((tag) => (
-                <span key={tag} className="rounded-md bg-[var(--blue-soft)] px-2 py-1 text-xs text-[var(--blue)]">
-                  {tag}
-                </span>
-              ))}
-            </div>
-          </Link>
+              <ConfirmAction
+                action={deleteLawAction}
+                hiddenFields={{ id: law.id }}
+                title={`删除「${law.name}」`}
+                subtitle={`「${law.name}」会从创作法典中移除，也会从已绑定它的方案里解除引用。已经生成的旧成稿快照不会受影响。`}
+                confirmLabel="删除"
+                triggerSize="icon-xs"
+                triggerClassName="text-muted-foreground hover:text-destructive"
+              />
+            </CardFooter>
+          </Card>
         ))}
       </section>
     </div>
-  );
+  )
 }

@@ -1,147 +1,109 @@
-import Link from "next/link";
-import { notFound } from "next/navigation";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { notFound } from "next/navigation"
+import { WandSparklesIcon } from "lucide-react"
 import {
   retryDraftAction,
+  retryDraftFromSnapshotAction,
+  reviseDraftAction,
   saveDraftVersionAction,
-} from "@/app/actions";
-import { FormSubmitButton } from "@/components/form-submit-button";
-import { StatusPill } from "@/components/status-pill";
-import { getDraftPageData } from "@/lib/data/demo-store";
-import { draftSourceLabel, formatDate } from "@/lib/utils";
+} from "@/app/actions"
+import { DraftVersionPanel } from "@/components/draft-version-panel"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card"
+import { getDraftPageData } from "@/lib/data/demo-store"
 
 type DraftPageProps = {
-  params: Promise<{ id: string }>;
-  searchParams: Promise<{ v?: string }>;
-};
+  params: Promise<{ id: string }>
+}
 
-export default async function DraftPage({ params, searchParams }: DraftPageProps) {
-  const { id } = await params;
-  const { v } = await searchParams;
-  const { draft, fragment } = await getDraftPageData(id);
+export default async function DraftPage({ params }: DraftPageProps) {
+  const { id } = await params
+  const { draft, fragment, scheme, laws } = await getDraftPageData(id)
 
   if (!draft || !fragment) {
-    notFound();
+    notFound()
   }
 
-  const requestedVersion = Number(v ?? draft.versions.at(-1)?.versionNo ?? 1);
-  const activeVersion =
-    draft.versions.find((version) => version.versionNo === requestedVersion) ??
-    draft.versions.at(-1);
-
-  if (!activeVersion) {
-    notFound();
+  if (draft.versions.length === 0) {
+    notFound()
   }
 
-  const activeIndex = draft.versions.findIndex(
-    (version) => version.id === activeVersion.id,
-  );
-  const previous = draft.versions[activeIndex - 1];
-  const next = draft.versions[activeIndex + 1];
+  const schemeName = scheme?.name ?? draft.schemeSnapshot.schemeName
+  const schemeDescription =
+    scheme?.description ?? draft.schemeSnapshot.schemeDescription
+  const currentLaws = scheme
+    ? laws.map((law) => ({
+        id: law.id,
+        name: law.name,
+        prompt: law.prompt,
+      }))
+    : draft.schemeSnapshot.laws.map((law) => ({
+        id: law.lawId,
+        name: law.name,
+        prompt: law.prompt,
+      }))
 
   return (
-    <div className="space-y-6">
-      <header className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <p className="text-sm font-medium text-[var(--accent)]">成稿卷</p>
-          <h1 className="page-title">{draft.schemeSnapshot.schemeName}</h1>
-          <p className="mt-2 text-sm text-[var(--muted)]">
-            来自碎片：
-            <Link href={`/fragments/${fragment.id}`} className="font-medium text-[var(--ink)] underline underline-offset-4">
-              {fragment.title}
-            </Link>
+    <div className="flex min-h-[calc(100svh-6rem)] flex-col gap-6">
+      <section className="paper-surface flex flex-col gap-5 rounded-2xl border p-5 shadow-xs">
+        <div className="min-w-0">
+          <h1 className="max-w-3xl text-2xl font-medium leading-snug text-pretty">
+            {schemeName}
+          </h1>
+          <p className="mt-4 max-w-4xl whitespace-pre-wrap text-base leading-8 text-muted-foreground">
+            {schemeDescription}
           </p>
         </div>
-        <form action={retryDraftAction}>
-          <input type="hidden" name="draftId" value={draft.id} />
-          <FormSubmitButton icon="refresh" title="再试一次">
-            再试一次
-          </FormSubmitButton>
-        </form>
-      </header>
 
-      <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
-        <article className="card overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] p-4">
-            <div className="flex items-center gap-3">
-              <StatusPill status={activeVersion.status} />
-              <span className="text-sm font-medium">
-                第 {activeVersion.versionNo} 稿，{draftSourceLabel(activeVersion.source)}
-              </span>
-              <span className="text-sm text-[var(--muted)]">
-                {formatDate(activeVersion.createdAt)}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Link
-                href={previous ? `/drafts/${draft.id}?v=${previous.versionNo}` : "#"}
-                className={`inline-flex size-10 items-center justify-center rounded-md border border-[var(--line)] bg-white ${previous ? "text-[var(--ink)]" : "pointer-events-none text-[var(--line)]"}`}
-                title="上一稿"
-              >
-                <ChevronLeft size={18} aria-hidden="true" />
-              </Link>
-              <Link
-                href={next ? `/drafts/${draft.id}?v=${next.versionNo}` : "#"}
-                className={`inline-flex size-10 items-center justify-center rounded-md border border-[var(--line)] bg-white ${next ? "text-[var(--ink)]" : "pointer-events-none text-[var(--line)]"}`}
-                title="下一稿"
-              >
-                <ChevronRight size={18} aria-hidden="true" />
-              </Link>
-            </div>
+        <div className="flex items-end justify-between gap-4">
+          <div className="flex min-w-0 flex-1 flex-col gap-3">
+            <h2 className="section-title">创作准则</h2>
+            {currentLaws.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {currentLaws.map((law) => (
+                  <HoverCard key={law.id}>
+                    <HoverCardTrigger render={<button type="button" className="focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50" />}>
+                      <Badge variant="secondary">{law.name}</Badge>
+                    </HoverCardTrigger>
+                    <HoverCardContent className="w-80">
+                      <div className="flex flex-col gap-2">
+                        <h3 className="font-medium">{law.name}</h3>
+                        <p className="text-sm leading-6 text-muted-foreground">
+                          {law.prompt}
+                        </p>
+                      </div>
+                    </HoverCardContent>
+                  </HoverCard>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                这个方案还没有绑定创作准则。
+              </p>
+            )}
           </div>
 
-          {activeVersion.status === "failed" ? (
-            <div className="p-4 text-sm text-[var(--danger)]">
-              {activeVersion.errorMessage}
-            </div>
-          ) : (
-            <pre className="max-h-[68vh] overflow-y-auto whitespace-pre-wrap p-5 font-sans text-[15px] leading-7 text-[var(--ink)]">
-              {activeVersion.content}
-            </pre>
-          )}
-        </article>
-
-        <aside className="space-y-4">
-          <form action={saveDraftVersionAction} className="card space-y-3 p-4">
+          <form action={retryDraftAction} className="shrink-0">
             <input type="hidden" name="draftId" value={draft.id} />
-            <label className="block text-sm font-medium" htmlFor="draft-content">
-              编辑当前稿次
-            </label>
-            <textarea
-              id="draft-content"
-              name="content"
-              className="field min-h-64 resize-y"
-              defaultValue={activeVersion.content}
-              required
-            />
-            <div className="flex justify-end">
-              <FormSubmitButton icon="save" title="保存">
-                保存
-              </FormSubmitButton>
-            </div>
+            <Button type="submit">
+              <WandSparklesIcon data-icon="inline-start" aria-hidden="true" />
+              出稿
+            </Button>
           </form>
-
-          <div className="card p-4">
-            <h2 className="section-title">本成稿使用的出稿方案</h2>
-            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--muted)]">
-              {draft.schemeSnapshot.schemeDescription}
-            </p>
-            <div className="mt-4 space-y-3">
-              {draft.schemeSnapshot.laws.map((law) => (
-                <div key={law.lawId} className="rounded-md border border-[var(--line)] bg-[var(--soft)] p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="font-medium">{law.name}</p>
-                    <span className="text-xs text-[var(--muted)]">v{law.version}</span>
-                  </div>
-                  <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-                    {law.prompt}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </aside>
+        </div>
       </section>
+
+      <DraftVersionPanel
+        draftId={draft.id}
+        versions={draft.versions}
+        retryFromSnapshotAction={retryDraftFromSnapshotAction}
+        reviseDraftAction={reviseDraftAction}
+        saveDraftVersionAction={saveDraftVersionAction}
+      />
     </div>
-  );
+  )
 }

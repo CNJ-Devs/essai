@@ -1,135 +1,121 @@
-import Link from "next/link";
-import { notFound } from "next/navigation";
-import { ScrollText } from "lucide-react";
+import Link from "next/link"
+import { notFound } from "next/navigation"
+import { PencilIcon } from "lucide-react"
 import {
+  deleteFragmentAction,
   generateDraftsAction,
-  updateFragmentAction,
-} from "@/app/actions";
-import { FormSubmitButton } from "@/components/form-submit-button";
-import { GenerateForm } from "@/components/generate-form";
-import { StatusPill } from "@/components/status-pill";
-import { getFragmentPageData } from "@/lib/data/demo-store";
-import { draftSourceLabel, formatDate } from "@/lib/utils";
+} from "@/app/actions"
+import { ConfirmAction } from "@/components/confirm-action"
+import { DraftGenerateDialog } from "@/components/draft-generate-dialog"
+import { buttonVariants } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardFooter } from "@/components/ui/card"
+import { getFragmentPageData } from "@/lib/data/demo-store"
+import { cn, formatDate, summarize } from "@/lib/utils"
 
 type FragmentDetailPageProps = {
-  params: Promise<{ id: string }>;
-};
+  params: Promise<{ id: string }>
+}
 
 export default async function FragmentDetailPage({
   params,
 }: FragmentDetailPageProps) {
-  const { id } = await params;
-  const { fragment, schemes, drafts } = await getFragmentPageData(id);
+  const { id } = await params
+  const { fragment, schemes, drafts } = await getFragmentPageData(id)
 
   if (!fragment) {
-    notFound();
+    notFound()
   }
 
   return (
-    <div className="space-y-6">
-      <header>
-        <p className="text-sm font-medium text-[var(--accent)]">碎片札记</p>
-        <h1 className="page-title">{fragment.title}</h1>
+    <div className="flex flex-col gap-6">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 flex-col gap-2">
+          <h1 className="page-title min-w-0 break-words">{fragment.title}</h1>
+          <div className="text-sm text-muted-foreground">
+            {formatDate(fragment.createdAt)}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Link
+            href={`/fragments/${fragment.id}/edit`}
+            className={cn(
+              buttonVariants({ variant: "outline" }),
+              "border-foreground/20 bg-card shadow-xs",
+            )}
+          >
+            <PencilIcon data-icon="inline-start" aria-hidden="true" />
+            调整内容
+          </Link>
+          <DraftGenerateDialog
+            action={generateDraftsAction}
+            fragmentId={fragment.id}
+            schemes={schemes}
+          />
+          <ConfirmAction
+            action={deleteFragmentAction}
+            hiddenFields={{ id: fragment.id }}
+            title="删除碎片"
+            subtitle="这条碎片和它派生出的成稿都会被删除。这个操作不能撤销。"
+            confirmLabel="删除"
+          />
+        </div>
       </header>
 
-      <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <form action={updateFragmentAction} className="card space-y-3 p-4">
-          <input type="hidden" name="id" value={fragment.id} />
-          <label className="block text-sm font-medium" htmlFor="title">
-            碎片标题
-          </label>
-          <input
-            id="title"
-            name="title"
-            className="field"
-            defaultValue={fragment.title}
-            required
-          />
-          <label className="block text-sm font-medium" htmlFor="content">
-            原始碎片内容
-          </label>
-          <textarea
-            id="content"
-            name="content"
-            className="field min-h-52 resize-y"
-            defaultValue={fragment.content}
-            required
-          />
-          <div className="flex justify-end">
-            <FormSubmitButton icon="save" title="保存">
-              保存
-            </FormSubmitButton>
-          </div>
-        </form>
+      <article className="paper-surface rounded-2xl border p-5 text-base leading-8 shadow-xs">
+        {fragment.content}
+      </article>
 
-        <div className="card p-4">
-          <h2 className="section-title">札记信息</h2>
-          <dl className="mt-4 space-y-3 text-sm">
-            <div className="flex justify-between gap-4">
-              <dt className="text-[var(--muted)]">标题来源</dt>
-              <dd>{fragment.titleSource === "ai" ? "AI" : "手动"}</dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-[var(--muted)]">创建时间</dt>
-              <dd>{formatDate(fragment.createdAt)}</dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-[var(--muted)]">成稿数量</dt>
-              <dd>{drafts.length}</dd>
-            </div>
-          </dl>
+      <section className="flex flex-col gap-3">
+        <div>
+          <h2 className="section-title">已酿成稿</h2>
         </div>
-      </section>
 
-      <GenerateForm
-        fragmentId={fragment.id}
-        schemes={schemes}
-        action={generateDraftsAction}
-      />
+        {drafts.length > 0 ? (
+          <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
+            {drafts.map((draft) => {
+              const latestVersion = draft.versions.at(-1)
+              const currentScheme = schemes.find(
+                (scheme) => scheme.id === draft.schemeSnapshot.schemeId,
+              )
+              const needsBadge =
+                latestVersion?.status === "brewing" ||
+                latestVersion?.status === "failed"
 
-      <section className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="section-title">派生出的成稿</h2>
-          <span className="text-sm text-[var(--muted)]">{drafts.length} 个</span>
-        </div>
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {drafts.map((draft) => {
-            const latestVersion = draft.versions.at(-1);
-
-            return (
-              <Link
-                key={draft.id}
-                href={`/drafts/${draft.id}`}
-                className="card block p-4 transition-colors hover:border-[var(--accent)]"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex min-w-0 items-start gap-3">
-                    <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md bg-[var(--accent-soft)] text-[var(--accent)]">
-                      <ScrollText size={18} aria-hidden="true" />
-                    </span>
-                    <div className="min-w-0">
-                      <h3 className="font-semibold">
-                        {draft.schemeSnapshot.schemeName}
-                      </h3>
-                      <p className="mt-1 text-sm text-[var(--muted)]">
+              return (
+                <Link key={draft.id} href={`/drafts/${draft.id}`} className="group focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+                  <Card className="aspect-[4/5] transition-colors group-hover:border-primary/50">
+                    <CardContent className="flex flex-1 flex-col justify-between gap-3">
+                      <div>
+                        <h3 className="line-clamp-3 font-heading text-lg font-medium">
+                          {currentScheme?.name ?? draft.schemeSnapshot.schemeName}
+                        </h3>
+                        <p className="mt-3 line-clamp-6 text-sm leading-6 text-muted-foreground">
+                          {summarize(latestVersion?.content || "这一稿还在酝酿中。", 160)}
+                        </p>
+                      </div>
+                      {needsBadge ? (
+                        <Badge variant={latestVersion.status === "failed" ? "destructive" : "secondary"}>
+                          {latestVersion.status === "failed" ? "出稿失败" : "酝酿中"}
+                        </Badge>
+                      ) : null}
+                    </CardContent>
+                    <CardFooter>
+                      <span className="text-sm text-muted-foreground">
                         {draft.versions.length} 个稿次
-                      </p>
-                    </div>
-                  </div>
-                  {latestVersion ? <StatusPill status={latestVersion.status} /> : null}
-                </div>
-                {latestVersion ? (
-                  <p className="mt-4 text-sm text-[var(--muted)]">
-                    第 {latestVersion.versionNo} 稿，
-                    {draftSourceLabel(latestVersion.source)}，
-                    {formatDate(latestVersion.createdAt)}
-                  </p>
-                ) : null}
-              </Link>
-            );
-          })}
-        </div>
+                      </span>
+                    </CardFooter>
+                  </Card>
+                </Link>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="rounded-2xl border bg-card p-8 text-sm text-muted-foreground">
+            还没有成稿。点击右上角「出稿」选择方案开始酝酿。
+          </div>
+        )}
       </section>
     </div>
-  );
+  )
 }
