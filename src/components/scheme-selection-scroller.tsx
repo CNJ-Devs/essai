@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react"
+import { copy } from "@/lib/i18n"
 import type { Scheme } from "@/lib/types"
 import { cn, summarize } from "@/lib/utils"
+import { EmptyState } from "@/components/empty-state"
 import { SchemeCountToggle } from "@/components/scheme-count-toggle"
 import { Button } from "@/components/ui/button"
 
@@ -116,89 +118,104 @@ export function SchemeSelectionScroller({
       ) : null}
 
       <div className="relative rounded-2xl border bg-muted/45 p-3">
-        {scrollState.canScrollLeft ? (
-          <Button
-            type="button"
-            variant="secondary"
-            size="icon"
-            aria-label="向左翻动出稿方案"
-            className="absolute left-2 top-1/2 z-[1] -translate-y-1/2 shadow-sm"
-            onClick={() => scrollByPage("left")}
-          >
-            <ChevronLeftIcon aria-hidden="true" />
-          </Button>
-        ) : null}
-        <div
-          ref={scrollerRef}
-          className="scroll-fade-x flex min-w-0 gap-3 overflow-x-auto px-0 pb-1"
-        >
-          {schemes.map((scheme) => {
-            const isSelected = selected[scheme.id] === true
-            const count = counts[scheme.id] ?? 1
-
-            return (
-              <div
-                key={scheme.id}
-                className={cn(
-                  "flex shrink-0 flex-col rounded-xl border bg-card text-card-foreground shadow-xs transition-colors",
-                  compact ? "w-44" : "w-52",
-                  isSelected ? "border-primary" : "border-border",
-                )}
+        {schemes.length > 0 ? (
+          <>
+            {scrollState.canScrollLeft ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                aria-label={copy.accessibility.scrollSchemesLeft}
+                className="absolute left-2 top-1/2 z-[1] -translate-y-1/2 shadow-sm"
+                onClick={() => scrollByPage("left")}
               >
-                <button
-                  type="button"
-                  className="flex aspect-square flex-col gap-3 p-3 text-left focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-                  onClick={() => toggle(scheme.id)}
-                  aria-pressed={isSelected}
-                >
-                  <span
+                <ChevronLeftIcon aria-hidden="true" />
+              </Button>
+            ) : null}
+            <div
+              ref={scrollerRef}
+              className="scroll-fade-x flex min-w-0 gap-3 overflow-x-auto px-0 pb-1"
+            >
+              {schemes.map((scheme) => {
+                const isSelected = selected[scheme.id] === true
+                const count = counts[scheme.id] ?? 1
+
+                return (
+                  <div
+                    key={scheme.id}
                     className={cn(
-                      "flex size-5 items-center justify-center rounded-full border",
-                      isSelected
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-muted-foreground/50 bg-background",
+                      "flex shrink-0 flex-col rounded-xl border bg-card text-card-foreground shadow-xs transition-colors",
+                      compact ? "w-44" : "w-52",
+                      isSelected ? "border-primary" : "border-border",
                     )}
-                    aria-hidden="true"
                   >
-                    {isSelected ? "✓" : null}
-                  </span>
-                  <span className="line-clamp-2 font-medium">{scheme.name}</span>
-                  <span className="line-clamp-4 text-xs leading-5 text-muted-foreground">
-                    {summarize(scheme.description, compact ? 74 : 96)}
-                  </span>
-                </button>
-                <div className="flex items-center justify-between gap-3 border-t bg-muted/35 p-3">
-                  <span className="text-xs text-muted-foreground">稿次数</span>
-                  <SchemeCountToggle
-                    count={count}
-                    label={`${scheme.name} 稿次数`}
-                    onCountChange={(nextCount) =>
-                      setCount(scheme.id, nextCount)
-                    }
-                  />
-                </div>
-                {isSelected ? (
-                  <>
-                    <input type="hidden" name="schemeId" value={scheme.id} />
-                    <input type="hidden" name={`count_${scheme.id}`} value={count} />
-                  </>
-                ) : null}
-              </div>
-            )
-          })}
-        </div>
-        {scrollState.canScrollRight ? (
-          <Button
-            type="button"
-            variant="secondary"
-            size="icon"
-            aria-label="向右翻动出稿方案"
-            className="absolute right-2 top-1/2 z-[1] -translate-y-1/2 shadow-sm"
-            onClick={() => scrollByPage("right")}
-          >
-            <ChevronRightIcon aria-hidden="true" />
-          </Button>
-        ) : null}
+                    <button
+                      type="button"
+                      className="flex aspect-square flex-col gap-3 p-3 text-left focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                      onClick={() => toggle(scheme.id)}
+                      aria-pressed={isSelected}
+                    >
+                      <span
+                        className={cn(
+                          "flex size-5 items-center justify-center rounded-full border",
+                          isSelected
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-muted-foreground/50 bg-background",
+                        )}
+                        aria-hidden="true"
+                      >
+                        {isSelected ? "✓" : null}
+                      </span>
+                      <span className="line-clamp-2 font-medium">{scheme.name}</span>
+                      <span className="line-clamp-4 text-xs leading-5 text-muted-foreground">
+                        {summarize(scheme.description, compact ? 74 : 96)}
+                      </span>
+                    </button>
+                    <div className="flex items-center justify-between gap-3 border-t bg-muted/35 p-3">
+                      <span className="text-xs text-muted-foreground">
+                        {copy.schemeSelection.countLabel}
+                      </span>
+                      <SchemeCountToggle
+                        count={count}
+                        label={copy.accessibility.schemeCount(scheme.name)}
+                        onCountChange={(nextCount) =>
+                          setCount(scheme.id, nextCount)
+                        }
+                      />
+                    </div>
+                    {isSelected ? (
+                      <>
+                        <input type="hidden" name="schemeId" value={scheme.id} />
+                        <input type="hidden" name={`count_${scheme.id}`} value={count} />
+                      </>
+                    ) : null}
+                  </div>
+                )
+              })}
+            </div>
+            {scrollState.canScrollRight ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                aria-label={copy.accessibility.scrollSchemesRight}
+                className="absolute right-2 top-1/2 z-[1] -translate-y-1/2 shadow-sm"
+                onClick={() => scrollByPage("right")}
+              >
+                <ChevronRightIcon aria-hidden="true" />
+              </Button>
+            ) : null}
+          </>
+        ) : (
+          <EmptyState
+            title={copy.schemeSelection.noSchemesTitle}
+            description={copy.schemeSelection.noSchemesDescription}
+            className={cn(
+              "rounded-xl border border-dashed bg-card/60 p-5",
+              compact ? "h-[14.5rem]" : "h-[16.5rem]",
+            )}
+          />
+        )}
       </div>
     </div>
   )

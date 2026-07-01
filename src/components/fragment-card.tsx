@@ -6,6 +6,7 @@ import {
 import { ConfirmAction } from "@/components/confirm-action"
 import { FragmentCardTitleEditor } from "@/components/fragment-title-editor"
 import type { Draft, Fragment } from "@/lib/types"
+import { copy } from "@/lib/i18n"
 import { formatDate, summarize } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardFooter } from "@/components/ui/card"
@@ -50,16 +51,16 @@ export function FragmentCard({
           <span>{formatDate(fragment.createdAt)}</span>
           {status ? (
             <Badge variant={status === "failed" ? "destructive" : "secondary"}>
-              {status === "failed" ? "出稿失败" : "酝酿中"}
+              {copy.status[status]}
             </Badge>
           ) : null}
         </div>
         <ConfirmAction
           action={deleteFragmentAction}
           hiddenFields={{ id: fragment.id }}
-          title="删除碎片"
-          subtitle="这条碎片和它派生出的成稿都会被删除。这个操作不能撤销。"
-          confirmLabel="删除"
+          title={copy.fragments.deleteTitle}
+          subtitle={copy.fragments.deleteDescription}
+          confirmLabel={copy.action.delete}
           triggerSize="icon-xs"
           triggerClassName="text-muted-foreground hover:text-destructive"
         />

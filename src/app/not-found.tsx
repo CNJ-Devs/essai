@@ -1,5 +1,6 @@
 import Link from "next/link"
 import { buttonVariants } from "@/components/ui/button"
+import { copy } from "@/lib/i18n"
 import {
   Card,
   CardContent,
@@ -13,14 +14,14 @@ export default function NotFound() {
     <main className="flex min-h-screen items-center justify-center bg-background p-6">
       <Card className="max-w-md text-center">
         <CardHeader>
-          <CardTitle>没有找到这一页</CardTitle>
+          <CardTitle>{copy.notFound.title}</CardTitle>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
-          这条记录可能已经被删除，或链接不再可用。
+          {copy.notFound.description}
         </CardContent>
         <CardFooter className="justify-center">
           <Link href="/fragments" className={buttonVariants()}>
-            回到拾光集
+            {copy.notFound.action}
           </Link>
         </CardFooter>
       </Card>

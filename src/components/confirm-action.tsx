@@ -1,6 +1,7 @@
 import type { ComponentProps } from "react"
 import type { LucideIcon } from "lucide-react"
 import { Trash2Icon } from "lucide-react"
+import { copy } from "@/lib/i18n"
 import { Button } from "@/components/ui/button"
 import {
   AlertDialog,
@@ -11,7 +12,6 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
-  AlertDialogMedia,
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
@@ -24,7 +24,7 @@ export function ConfirmAction({
   title,
   subtitle,
   confirmLabel,
-  cancelLabel = "取消",
+  cancelLabel = copy.action.cancel,
   icon: Icon = Trash2Icon,
   triggerVariant = "ghost",
   triggerSize = "icon",
@@ -57,9 +57,6 @@ export function ConfirmAction({
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogMedia>
-            <Icon aria-hidden="true" />
-          </AlertDialogMedia>
           <AlertDialogTitle>{title}</AlertDialogTitle>
         </AlertDialogHeader>
         <AlertDialogBody>

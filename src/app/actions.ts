@@ -69,10 +69,12 @@ function parseSelections(formData: FormData): SchemeSelection[] {
 }
 
 function parseTags(raw: string | undefined) {
-  return (raw ?? "")
+  const tags = (raw ?? "")
     .split(/[,，]/)
     .map((tag) => tag.trim())
     .filter(Boolean);
+
+  return Array.from(new Set(tags));
 }
 
 export async function collectFragmentAction(formData: FormData) {

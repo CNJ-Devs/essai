@@ -6,6 +6,7 @@ import {
   updateSchemeAction,
 } from "@/app/actions"
 import { ConfirmAction } from "@/components/confirm-action"
+import { EmptyState } from "@/components/empty-state"
 import { SchemeEditorDialog } from "@/components/scheme-editor-dialog"
 import { Button } from "@/components/ui/button"
 import {
@@ -16,6 +17,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { getSchemePageData } from "@/lib/data/demo-store"
+import { copy } from "@/lib/i18n"
 import type { Law } from "@/lib/types"
 
 type SchemePageProps = {
@@ -52,15 +54,15 @@ export default async function SchemePage({ params }: SchemePageProps) {
           <ConfirmAction
             action={deleteSchemeAction}
             hiddenFields={{ id: scheme.id }}
-            title="删除出稿方案"
-            subtitle="删除后不会影响已经生成的旧成稿快照，但之后不能再选择这个方案。"
-            confirmLabel="删除"
+            title={copy.schemes.deleteDetailTitle}
+            subtitle={copy.schemes.deleteDetailDescription}
+            confirmLabel={copy.action.delete}
           />
         </div>
       </header>
 
       <section className="flex flex-col gap-3">
-        <h2 className="section-title">创作法则</h2>
+        <h2 className="section-title">{copy.schemes.lawsTitle}</h2>
         {boundLaws.length > 0 ? (
           <div className="flex flex-col gap-3">
             {boundLaws.map((law, index) => (
@@ -80,7 +82,7 @@ export default async function SchemePage({ params }: SchemePageProps) {
                         type="submit"
                         variant="ghost"
                         size="icon-sm"
-                        aria-label={`移除 ${law.name}`}
+                        aria-label={copy.accessibility.removeLaw(law.name)}
                       >
                         <XIcon aria-hidden="true" />
                       </Button>
@@ -96,9 +98,11 @@ export default async function SchemePage({ params }: SchemePageProps) {
             ))}
           </div>
         ) : (
-          <div className="rounded-2xl border bg-card p-6 text-sm text-muted-foreground">
-            这个方案还没有绑定创作法则。
-          </div>
+          <EmptyState
+            title={copy.schemes.noBoundLawsTitle}
+            description={copy.schemes.noBoundLawsDescription}
+            className="min-h-40 rounded-2xl border border-dashed bg-card/60 p-6"
+          />
         )}
       </section>
     </div>

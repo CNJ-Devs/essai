@@ -9,7 +9,7 @@ import {
   LibraryBigIcon,
   SparklesIcon,
 } from "lucide-react"
-import { zhCN } from "@/lib/i18n"
+import { copy } from "@/lib/i18n"
 import { cn } from "@/lib/utils"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -22,17 +22,17 @@ import {
 const navItems = [
   {
     href: "/fragments",
-    label: zhCN.nav.fragments,
+    label: copy.nav.fragments,
     icon: FileTextIcon,
   },
   {
     href: "/schemes",
-    label: zhCN.nav.schemes,
+    label: copy.nav.schemes,
     icon: LibraryBigIcon,
   },
   {
     href: "/laws",
-    label: zhCN.nav.laws,
+    label: copy.nav.laws,
     icon: BookOpenTextIcon,
   },
 ]
@@ -40,14 +40,14 @@ const navItems = [
 const primaryPages = new Set(["/fragments", "/schemes", "/laws"])
 
 function getPageLabel(pathname: string) {
-  if (pathname.startsWith("/fragments/new")) return "收集碎片"
+  if (pathname.startsWith("/fragments/new")) return copy.page.collectFragment
   if (pathname.endsWith("/edit") && pathname.startsWith("/fragments/")) {
-    return "调整碎片"
+    return copy.page.editFragment
   }
-  if (pathname.startsWith("/fragments/")) return zhCN.page.fragmentDetail
-  if (pathname.startsWith("/drafts/")) return zhCN.page.draftDetail
-  if (pathname.startsWith("/schemes/")) return zhCN.page.schemeDetail
-  if (pathname.startsWith("/laws/")) return zhCN.page.lawDetail
+  if (pathname.startsWith("/fragments/")) return copy.page.fragmentDetail
+  if (pathname.startsWith("/drafts/")) return copy.page.draftDetail
+  if (pathname.startsWith("/schemes/")) return copy.page.schemeDetail
+  if (pathname.startsWith("/laws/")) return copy.page.lawDetail
   return "EssAI"
 }
 
@@ -62,7 +62,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-primary-foreground"
       >
-        跳到主要内容
+        {copy.accessibility.skipToMain}
       </a>
       <div
         className={cn(
@@ -173,7 +173,7 @@ function TopBar({
               type="button"
               variant="ghost"
               size="icon"
-              aria-label="返回"
+              aria-label={copy.accessibility.back}
               onClick={onBack}
             >
               <ArrowLeftIcon aria-hidden="true" />

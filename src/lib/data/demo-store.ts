@@ -5,6 +5,7 @@ import {
   reviseDraftContent,
 } from "@/lib/ai/generation";
 import { createSeedState, DEMO_USER_ID } from "@/lib/data/seed";
+import { copy } from "@/lib/i18n";
 import type { DemoState } from "@/lib/data/store-types";
 import {
   createRevisionDraftSnapshot,
@@ -27,7 +28,7 @@ const globalForStore = globalThis as unknown as {
   essaiDemoFixtureVersion?: number;
 };
 
-const DEMO_FIXTURE_VERSION = 4;
+const DEMO_FIXTURE_VERSION = 7;
 
 function state() {
   if (
@@ -47,6 +48,10 @@ function now() {
 
 function createId(prefix: string) {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
+function normalizeTags(tags: string[]) {
+  return Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean)));
 }
 
 function sortNewest<T extends { createdAt: string }>(items: T[]) {
@@ -488,7 +493,7 @@ export async function createLaw(input: {
     ownerUserId: DEMO_USER_ID,
     name: input.name.trim(),
     prompt: input.prompt.trim(),
-    tags: input.tags,
+    tags: normalizeTags(input.tags),
     visibility: input.visibility,
     sourceLawId: null,
     version: 1,
@@ -517,7 +522,7 @@ export async function updateLaw(input: {
   const promptChanged = law.prompt !== input.prompt.trim();
   law.name = input.name.trim();
   law.prompt = input.prompt.trim();
-  law.tags = input.tags;
+  law.tags = normalizeTags(input.tags);
   law.visibility = input.visibility;
   law.version = promptChanged ? law.version + 1 : law.version;
   law.updatedAt = now();
@@ -606,7 +611,7 @@ async function createAiDraftVersion(
       source: "ai",
       content: "",
       errorMessage:
-        error instanceof Error ? error.message : "出稿失败，请稍后再试。",
+        error instanceof Error ? error.message : copy.errors.draftFailed,
       model: process.env.AI_MODEL ?? "openai/gpt-5.5",
       promptTemplateVersion: "v1",
       snapshot: createSchemeDraftSnapshot(snapshot),
@@ -676,7 +681,7 @@ async function createAiRevisionDraftVersion({
       source: "ai_revision",
       content: "",
       errorMessage:
-        error instanceof Error ? error.message : "改稿失败，请稍后再试。",
+        error instanceof Error ? error.message : copy.errors.revisionFailed,
       model: process.env.AI_MODEL ?? "openai/gpt-5.5",
       promptTemplateVersion: "v1-revision",
       snapshot,

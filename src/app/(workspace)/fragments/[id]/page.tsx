@@ -7,10 +7,12 @@ import {
 } from "@/app/actions"
 import { ConfirmAction } from "@/components/confirm-action"
 import { DraftGenerateDialog } from "@/components/draft-generate-dialog"
+import { EmptyState } from "@/components/empty-state"
 import { buttonVariants } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardFooter } from "@/components/ui/card"
 import { getFragmentPageData } from "@/lib/data/demo-store"
+import { copy } from "@/lib/i18n"
 import { cn, formatDate, summarize } from "@/lib/utils"
 
 type FragmentDetailPageProps = {
@@ -45,7 +47,7 @@ export default async function FragmentDetailPage({
             )}
           >
             <PencilIcon data-icon="inline-start" aria-hidden="true" />
-            调整内容
+            {copy.fragments.editContentAction}
           </Link>
           <DraftGenerateDialog
             action={generateDraftsAction}
@@ -55,9 +57,9 @@ export default async function FragmentDetailPage({
           <ConfirmAction
             action={deleteFragmentAction}
             hiddenFields={{ id: fragment.id }}
-            title="删除碎片"
-            subtitle="这条碎片和它派生出的成稿都会被删除。这个操作不能撤销。"
-            confirmLabel="删除"
+            title={copy.fragments.deleteTitle}
+            subtitle={copy.fragments.deleteDescription}
+            confirmLabel={copy.action.delete}
           />
         </div>
       </header>
@@ -68,7 +70,7 @@ export default async function FragmentDetailPage({
 
       <section className="flex flex-col gap-3">
         <div>
-          <h2 className="section-title">已酿成稿</h2>
+          <h2 className="section-title">{copy.fragments.draftsTitle}</h2>
         </div>
 
         {drafts.length > 0 ? (
@@ -91,18 +93,22 @@ export default async function FragmentDetailPage({
                           {currentScheme?.name ?? draft.schemeSnapshot.schemeName}
                         </h3>
                         <p className="mt-3 line-clamp-6 text-sm leading-6 text-muted-foreground">
-                          {summarize(latestVersion?.content || "这一稿还在酝酿中。", 160)}
+                          {summarize(
+                            latestVersion?.content ||
+                              copy.fragments.pendingDraftPreview,
+                            160,
+                          )}
                         </p>
                       </div>
                       {needsBadge ? (
                         <Badge variant={latestVersion.status === "failed" ? "destructive" : "secondary"}>
-                          {latestVersion.status === "failed" ? "出稿失败" : "酝酿中"}
+                          {copy.status[latestVersion.status]}
                         </Badge>
                       ) : null}
                     </CardContent>
                     <CardFooter>
                       <span className="text-sm text-muted-foreground">
-                        {draft.versions.length} 个稿次
+                        {copy.fragments.versionCount(draft.versions.length)}
                       </span>
                     </CardFooter>
                   </Card>
@@ -111,9 +117,11 @@ export default async function FragmentDetailPage({
             })}
           </div>
         ) : (
-          <div className="rounded-2xl border bg-card p-8 text-sm text-muted-foreground">
-            还没有成稿。点击右上角「出稿」选择方案开始酝酿。
-          </div>
+          <EmptyState
+            title={copy.fragments.noDraftsTitle}
+            description={copy.fragments.noDraftsDescription}
+            className="min-h-52 rounded-2xl border border-dashed bg-card/60 p-6"
+          />
         )}
       </section>
     </div>

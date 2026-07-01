@@ -19,8 +19,10 @@ import {
 import {
   createLawFromSchemeDialogAction,
 } from "@/app/actions"
+import { copy } from "@/lib/i18n"
 import type { Law, Scheme } from "@/lib/types"
 import { cn, summarize } from "@/lib/utils"
+import { EmptyState } from "@/components/empty-state"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -108,7 +110,7 @@ export function SchemeEditorDialog({
     const prompt = newLawPrompt.trim()
 
     if (!name || !prompt) {
-      setNewLawError("名称和内容都写上后，再收录这条法则。")
+      setNewLawError(copy.schemes.quickLawMissingError)
       return
     }
 
@@ -131,7 +133,7 @@ export function SchemeEditorDialog({
           setNewLawTags("")
         })
         .catch(() => {
-          setNewLawError("这条法则暂时没收录成功，稍后再试一次。")
+          setNewLawError(copy.schemes.quickLawFailedError)
         })
     })
   }
@@ -144,14 +146,14 @@ export function SchemeEditorDialog({
         ) : (
           <PlusIcon data-icon="inline-start" aria-hidden="true" />
         )}
-        {isEdit ? "编辑方案" : "新建方案"}
+        {isEdit ? copy.schemes.editTrigger : copy.schemes.createTrigger}
       </DialogTrigger>
       <DialogContent className="sm:max-w-4xl">
         <DialogHeader>
-          <DialogTitle>{isEdit ? "编辑出稿方案" : "新建出稿方案"}</DialogTitle>
-          <DialogDescription>
-            把身份、题材、平台、时长、语气、输出形态和禁忌写清楚，之后就能反复复用。
-          </DialogDescription>
+          <DialogTitle>
+            {isEdit ? copy.schemes.editTitle : copy.schemes.createTitle}
+          </DialogTitle>
+          <DialogDescription>{copy.schemes.editorDescription}</DialogDescription>
         </DialogHeader>
         <form action={action} className="contents">
           {scheme ? <input type="hidden" name="id" value={scheme.id} /> : null}
@@ -164,33 +166,33 @@ export function SchemeEditorDialog({
           <DialogBody>
             <FieldGroup>
               <Field>
-                <FieldLabel htmlFor="scheme-name">名称</FieldLabel>
+                <FieldLabel htmlFor="scheme-name">{copy.schemes.nameLabel}</FieldLabel>
                 <Input
                   id="scheme-name"
                   name="name"
                   autoComplete="off"
-                  placeholder="例如：年轻 CTO 车内口播…"
+                  placeholder={copy.schemes.namePlaceholder}
                   defaultValue={scheme?.name}
                   required
                 />
               </Field>
               <Field>
-                <FieldLabel htmlFor="scheme-description">方案说明</FieldLabel>
+                <FieldLabel htmlFor="scheme-description">
+                  {copy.schemes.descriptionLabel}
+                </FieldLabel>
                 <Textarea
                   id="scheme-description"
                   name="description"
                   autoComplete="off"
-                  placeholder="例如：这个方案用于停车后录制的单人口播。目标平台是小红书、抖音和 B 站。请输出 1 到 3 分钟逐字稿，语言自然，有观点，但不要像知识付费广告…"
+                  placeholder={copy.schemes.descriptionPlaceholder}
                   defaultValue={scheme?.description}
                   className="min-h-44"
                   required
                 />
               </Field>
               <FieldSet>
-                <FieldTitle>创作法则</FieldTitle>
-                <FieldDescription>
-                  从创作法典里挑选本方案要引用的法则，保存方案后才会绑定。
-                </FieldDescription>
+                <FieldTitle>{copy.schemes.lawsTitle}</FieldTitle>
+                <FieldDescription>{copy.schemes.lawsDescription}</FieldDescription>
                 <LawPickerScroller
                   laws={availableLaws}
                   selectedLawIds={selectedLawIds}
@@ -200,9 +202,9 @@ export function SchemeEditorDialog({
               <FieldSet className="gap-3 rounded-2xl border bg-muted/35 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 flex-col gap-1">
-                    <FieldTitle>新增法则</FieldTitle>
+                    <FieldTitle>{copy.schemes.quickLawTitle}</FieldTitle>
                     <FieldDescription>
-                      收录会立即写入创作法典，并在当前弹窗中自动勾选。
+                      {copy.schemes.quickLawDescription}
                     </FieldDescription>
                   </div>
                   <Button
@@ -216,39 +218,47 @@ export function SchemeEditorDialog({
                     onClick={handleCreateLaw}
                   >
                     <PlusIcon data-icon="inline-start" aria-hidden="true" />
-                    {isCreatingLaw ? "收录中" : "收录"}
+                    {isCreatingLaw
+                      ? copy.schemes.quickLawCollecting
+                      : copy.schemes.quickLawCollect}
                   </Button>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_14rem]">
                   <Field>
-                    <FieldLabel htmlFor="new-law-name">法则名称</FieldLabel>
+                    <FieldLabel htmlFor="new-law-name">
+                      {copy.schemes.quickLawNameLabel}
+                    </FieldLabel>
                     <Input
                       id="new-law-name"
                       value={newLawName}
                       onChange={(event) => setNewLawName(event.target.value)}
                       autoComplete="off"
-                      placeholder="例如：弱化说教感…"
+                      placeholder={copy.schemes.quickLawNamePlaceholder}
                     />
                   </Field>
                   <Field>
-                    <FieldLabel htmlFor="new-law-tags">标签</FieldLabel>
+                    <FieldLabel htmlFor="new-law-tags">
+                      {copy.schemes.quickLawTagsLabel}
+                    </FieldLabel>
                     <Input
                       id="new-law-tags"
                       value={newLawTags}
                       onChange={(event) => setNewLawTags(event.target.value)}
                       autoComplete="off"
-                      placeholder="结构，语气，短视频…"
+                      placeholder={copy.schemes.quickLawTagsPlaceholder}
                     />
                   </Field>
                 </div>
                 <Field>
-                  <FieldLabel htmlFor="new-law-prompt">法则内容</FieldLabel>
+                  <FieldLabel htmlFor="new-law-prompt">
+                    {copy.schemes.quickLawPromptLabel}
+                  </FieldLabel>
                   <Textarea
                     id="new-law-prompt"
                     value={newLawPrompt}
                     onChange={(event) => setNewLawPrompt(event.target.value)}
                     autoComplete="off"
-                    placeholder="写下这条法则如何影响成稿…"
+                    placeholder={copy.schemes.quickLawPromptPlaceholder}
                     className="min-h-24"
                   />
                   {newLawError ? (
@@ -263,7 +273,7 @@ export function SchemeEditorDialog({
           <DialogFooter>
             <Button type="submit">
               <SaveIcon data-icon="inline-start" aria-hidden="true" />
-              {isEdit ? "保存方案" : "创建方案"}
+              {isEdit ? copy.schemes.editSubmit : copy.schemes.createSubmit}
             </Button>
           </DialogFooter>
         </form>
@@ -354,6 +364,18 @@ function LawPickerScroller({
     })
   }
 
+  if (laws.length === 0) {
+    return (
+      <div className="relative min-w-0 max-w-full overflow-hidden bg-transparent">
+        <EmptyState
+          title={copy.schemes.noSelectableLawsTitle}
+          description={copy.schemes.noSelectableLawsDescription}
+          className="h-[13.5rem] rounded-xl border border-dashed bg-card/60 p-5"
+        />
+      </div>
+    )
+  }
+
   return (
     <div className="relative min-w-0 max-w-full overflow-hidden bg-transparent">
       {scrollState.canScrollLeft ? (
@@ -361,7 +383,7 @@ function LawPickerScroller({
           type="button"
           variant="secondary"
           size="icon"
-          aria-label="向左翻动创作法则"
+          aria-label={copy.accessibility.scrollLawsLeft}
           className="absolute left-2 top-1/2 z-[1] -translate-y-1/2 shadow-sm"
           onClick={() => scrollByPage("left")}
         >
@@ -370,7 +392,7 @@ function LawPickerScroller({
       ) : null}
       <div
         ref={scrollerRef}
-        className="scroll-fade-x grid w-full min-w-0 auto-cols-[minmax(17rem,40%)] grid-flow-col grid-rows-2 gap-3 overflow-x-auto pb-1"
+        className="scroll-fade-x grid h-[13.5rem] w-full min-w-0 auto-cols-[minmax(17rem,40%)] grid-flow-col grid-rows-[6.25rem_6.25rem] gap-3 overflow-x-auto pb-1"
       >
         {laws.map((law) => {
           const isSelected = selectedLawIds.includes(law.id)
@@ -413,7 +435,7 @@ function LawPickerScroller({
           type="button"
           variant="secondary"
           size="icon"
-          aria-label="向右翻动创作法则"
+          aria-label={copy.accessibility.scrollLawsRight}
           className="absolute right-2 top-1/2 z-[1] -translate-y-1/2 shadow-sm"
           onClick={() => scrollByPage("right")}
         >

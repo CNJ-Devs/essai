@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react"
 import { CheckIcon, PencilIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { copy } from "@/lib/i18n"
 import { cn } from "@/lib/utils"
 
 export function FragmentCardTitleEditor({
@@ -68,10 +69,15 @@ export function FragmentCardTitleEditor({
             autoComplete="off"
             autoFocus
             required
-            aria-label="碎片标题"
+            aria-label={copy.accessibility.fragmentTitle}
             className="h-5 min-w-0 rounded-none border-0 bg-transparent px-0 py-0 text-sm font-medium leading-5 shadow-none focus-visible:border-transparent focus-visible:ring-0 md:text-sm dark:bg-transparent"
           />
-          <Button type="submit" variant="secondary" size="icon-xs" aria-label="保存标题">
+          <Button
+            type="submit"
+            variant="secondary"
+            size="icon-xs"
+            aria-label={copy.accessibility.saveTitle}
+          >
             <CheckIcon aria-hidden="true" />
           </Button>
         </form>
@@ -94,7 +100,7 @@ export function FragmentCardTitleEditor({
         type="button"
         variant="ghost"
         size="icon-xs"
-        aria-label="编辑标题"
+        aria-label={copy.accessibility.editTitle}
         className="shrink-0 text-muted-foreground"
         onClick={() => {
           setDraftTitle(title)

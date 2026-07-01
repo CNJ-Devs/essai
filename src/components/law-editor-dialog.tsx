@@ -1,6 +1,7 @@
 "use client"
 
 import { PlusIcon, SaveIcon } from "lucide-react"
+import { copy } from "@/lib/i18n"
 import type { Law } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import {
@@ -34,53 +35,55 @@ export function LawEditorDialog({
         ) : (
           <PlusIcon data-icon="inline-start" aria-hidden="true" />
         )}
-        {isEdit ? "修订" : "收录法则"}
+        {isEdit ? copy.laws.editTrigger : copy.laws.createTrigger}
       </DialogTrigger>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{isEdit ? "修订创作法则" : "收录创作法则"}</DialogTitle>
-          <DialogDescription>
-            一条法则就是一条可复用的创作判断。它会在出稿时和方案一起被快照保存。
-          </DialogDescription>
+          <DialogTitle>
+            {isEdit ? copy.laws.editTitle : copy.laws.createTitle}
+          </DialogTitle>
+          <DialogDescription>{copy.laws.editorDescription}</DialogDescription>
         </DialogHeader>
         <form action={action} className="contents">
           {law ? <input type="hidden" name="id" value={law.id} /> : null}
           <input type="hidden" name="visibility" value="private" />
-          <DialogBody>
-            <FieldGroup>
+          <DialogBody className="px-5 pb-4 pt-1 scroll-pb-4">
+            <FieldGroup className="pb-1">
               <Field>
-                <FieldLabel htmlFor="law-name">名称</FieldLabel>
+                <FieldLabel htmlFor="law-name">{copy.laws.nameLabel}</FieldLabel>
                 <Input
                   id="law-name"
                   name="name"
                   autoComplete="off"
-                  placeholder="例如：黄金三秒…"
+                  placeholder={copy.laws.namePlaceholder}
                   defaultValue={law?.name}
                   required
                 />
               </Field>
               <Field>
-                <FieldLabel htmlFor="law-prompt">法则内容</FieldLabel>
+                <FieldLabel htmlFor="law-prompt">
+                  {copy.laws.promptLabel}
+                </FieldLabel>
                 <Textarea
                   id="law-prompt"
                   name="prompt"
                   autoComplete="off"
-                  placeholder="例如：开头 3 秒内必须让观众知道这条内容和自己有什么关系…"
+                  placeholder={copy.laws.promptPlaceholder}
                   defaultValue={law?.prompt}
                   className="min-h-56"
                   required
                 />
                 <FieldDescription>
-                  这段内容会作为 AI 出稿时的创作规则之一。
+                  {copy.laws.promptDescription}
                 </FieldDescription>
               </Field>
               <Field>
-                <FieldLabel htmlFor="law-tags">标签</FieldLabel>
+                <FieldLabel htmlFor="law-tags">{copy.laws.tagsLabel}</FieldLabel>
                 <Input
                   id="law-tags"
                   name="tags"
                   autoComplete="off"
-                  placeholder="开头，表达，短视频…"
+                  placeholder={copy.laws.tagsPlaceholder}
                   defaultValue={law?.tags.join("，")}
                 />
               </Field>
@@ -89,7 +92,7 @@ export function LawEditorDialog({
           <DialogFooter>
             <Button type="submit">
               <SaveIcon data-icon="inline-start" aria-hidden="true" />
-              {isEdit ? "保存修订" : "收录"}
+              {isEdit ? copy.laws.editSubmit : copy.laws.createSubmit}
             </Button>
           </DialogFooter>
         </form>

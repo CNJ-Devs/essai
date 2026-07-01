@@ -4,6 +4,7 @@ import { ConfirmAction } from "@/components/confirm-action"
 import { LawEditorDialog } from "@/components/law-editor-dialog"
 import { Badge } from "@/components/ui/badge"
 import { getLawPageData } from "@/lib/data/demo-store"
+import { copy } from "@/lib/i18n"
 
 type LawPageProps = {
   params: Promise<{ id: string }>
@@ -22,22 +23,24 @@ export default async function LawPage({ params }: LawPageProps) {
       <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h1 className="page-title">{law.name}</h1>
-          <div className="mt-4 flex flex-wrap gap-2">
-            {law.tags.map((tag) => (
-              <Badge key={tag} variant="secondary">
-                {tag}
-              </Badge>
-            ))}
-          </div>
+          {law.tags.length > 0 ? (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {Array.from(new Set(law.tags)).map((tag) => (
+                <Badge key={tag} variant="secondary">
+                  {tag}
+                </Badge>
+              ))}
+            </div>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <LawEditorDialog action={updateLawAction} law={law} />
           <ConfirmAction
             action={deleteLawAction}
             hiddenFields={{ id: law.id }}
-            title="删除创作法则"
-            subtitle="删除后，已生成成稿中的快照不会受影响，但它会从当前法典和已绑定方案里移除。"
-            confirmLabel="删除"
+            title={copy.laws.deleteDetailTitle}
+            subtitle={copy.laws.deleteDetailDescription}
+            confirmLabel={copy.action.delete}
           />
         </div>
       </header>

@@ -2,6 +2,7 @@ import { notFound } from "next/navigation"
 import { updateFragmentAction } from "@/app/actions"
 import { FragmentComposeForm } from "@/components/fragment-compose-form"
 import { getFragmentPageData } from "@/lib/data/demo-store"
+import { copy } from "@/lib/i18n"
 
 type EditFragmentPageProps = {
   params: Promise<{ id: string }>
@@ -18,9 +19,9 @@ export default async function EditFragmentPage({ params }: EditFragmentPageProps
   return (
     <div className="flex min-h-[calc(100svh-6rem)] flex-col gap-5">
       <header className="shrink-0">
-        <h1 className="page-title">调整碎片</h1>
+        <h1 className="page-title">{copy.fragments.editTitle}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          这里专心调整内容；标题可以回到碎片札记里单独改。
+          {copy.fragments.editSubtitle}
         </p>
       </header>
       <FragmentComposeForm

@@ -7,6 +7,7 @@ import {
   saveDraftVersionAction,
 } from "@/app/actions"
 import { DraftVersionPanel } from "@/components/draft-version-panel"
+import { EmptyState } from "@/components/empty-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -15,6 +16,7 @@ import {
   HoverCardTrigger,
 } from "@/components/ui/hover-card"
 import { getDraftPageData } from "@/lib/data/demo-store"
+import { copy } from "@/lib/i18n"
 
 type DraftPageProps = {
   params: Promise<{ id: string }>
@@ -61,7 +63,7 @@ export default async function DraftPage({ params }: DraftPageProps) {
 
         <div className="flex items-end justify-between gap-4">
           <div className="flex min-w-0 flex-1 flex-col gap-3">
-            <h2 className="section-title">创作准则</h2>
+            <h2 className="section-title">{copy.drafts.principlesTitle}</h2>
             {currentLaws.length > 0 ? (
               <div className="flex flex-wrap gap-2">
                 {currentLaws.map((law) => (
@@ -81,9 +83,12 @@ export default async function DraftPage({ params }: DraftPageProps) {
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">
-                这个方案还没有绑定创作准则。
-              </p>
+              <EmptyState
+                title={copy.drafts.noPrinciplesTitle}
+                description={copy.drafts.noPrinciplesDescription}
+                className="min-h-20 items-start rounded-xl border border-dashed bg-muted/30 p-4 text-left"
+                align="left"
+              />
             )}
           </div>
 
@@ -91,7 +96,7 @@ export default async function DraftPage({ params }: DraftPageProps) {
             <input type="hidden" name="draftId" value={draft.id} />
             <Button type="submit">
               <WandSparklesIcon data-icon="inline-start" aria-hidden="true" />
-              出稿
+              {copy.drafts.generate}
             </Button>
           </form>
         </div>

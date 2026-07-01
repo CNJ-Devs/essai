@@ -6,6 +6,7 @@ import {
   ChevronRightIcon,
   SendHorizontalIcon,
 } from "lucide-react"
+import { copy } from "@/lib/i18n"
 import type { DraftStatus, DraftVersion } from "@/lib/types"
 import { cn, draftStatusLabel, formatDate, summarize } from "@/lib/utils"
 import {
@@ -153,7 +154,7 @@ export function DraftVersionPanel({
             type="button"
             variant="secondary"
             size="icon"
-            aria-label="向左翻动稿件"
+            aria-label={copy.accessibility.scrollDraftsLeft}
             className="absolute left-2 top-1/2 z-10 -translate-y-1/2 shadow-sm"
             onClick={() => scrollByPage("left")}
           >
@@ -168,8 +169,8 @@ export function DraftVersionPanel({
             const isActive = version.id === activeVersion.id
             const preview =
               version.status === "failed"
-                ? version.errorMessage || "这一稿生成失败。"
-                : version.content || "这一稿还在酝酿中。"
+                ? version.errorMessage || copy.drafts.failedPreview
+                : version.content || copy.drafts.brewingPreview
 
             return (
               <button
@@ -206,7 +207,7 @@ export function DraftVersionPanel({
             type="button"
             variant="secondary"
             size="icon"
-            aria-label="向右翻动稿件"
+            aria-label={copy.accessibility.scrollDraftsRight}
             className="absolute right-2 top-1/2 z-10 -translate-y-1/2 shadow-sm"
             onClick={() => scrollByPage("right")}
           >
@@ -250,7 +251,7 @@ export function DraftVersionPanel({
                   type="button"
                   variant="outline"
                   size="icon-sm"
-                  aria-label="上一稿"
+                  aria-label={copy.accessibility.previousDraft}
                   disabled={!previousVersion}
                   onClick={() => selectVersion(previousVersion)}
                 >
@@ -260,7 +261,7 @@ export function DraftVersionPanel({
                   type="button"
                   variant="outline"
                   size="icon-sm"
-                  aria-label="下一稿"
+                  aria-label={copy.accessibility.nextDraft}
                   disabled={!nextVersion}
                   onClick={() => selectVersion(nextVersion)}
                 >
@@ -300,14 +301,14 @@ export function DraftVersionPanel({
                     htmlFor={`draft-revision-${activeVersion.id}`}
                     className="sr-only"
                   >
-                    修改意见
+                    {copy.drafts.revisionLabel}
                   </FieldLabel>
                   <div className="flex min-h-0 flex-1 flex-col gap-2 sm:flex-row sm:items-end">
                     <Textarea
                       id={`draft-revision-${activeVersion.id}`}
                       name="instruction"
                       required
-                      placeholder="说说这一版想怎么改，比如更锋利一点、压缩到 60 秒、结尾更有余味。"
+                      placeholder={copy.drafts.revisionPlaceholder}
                       className="h-full min-h-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent p-0 leading-6 shadow-none focus-visible:border-transparent focus-visible:ring-0"
                     />
                     <Button type="submit" className="sm:self-end">
@@ -315,7 +316,7 @@ export function DraftVersionPanel({
                         data-icon="inline-start"
                         aria-hidden="true"
                       />
-                      改写
+                      {copy.action.revise}
                     </Button>
                   </div>
                 </Field>
