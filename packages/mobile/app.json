@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "EssAI",
+    "slug": "essai-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "essai",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}
