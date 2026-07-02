@@ -4,6 +4,16 @@
 
 EssAI 是一个面向内容创作者的碎片收集与成稿工作台：用户随手收集碎片，选择一个或多个出稿方案，系统按方案与创作法则生成成稿，并保留每一次 AI 生成和手动编辑的稿次历史。
 
+## Monorepo 结构
+
+```text
+packages/
+  web/      # Next.js Web 应用和 Vercel API Routes
+  mobile/   # 预留移动端应用包，后续会替换为 Expo / React Native 项目
+```
+
+根目录使用 npm workspaces 和 Turborepo 编排任务。当前真实应用在 `packages/web`。
+
 ## 当前版本
 
 第一版已经搭好核心产品骨架：
@@ -23,14 +33,36 @@ npm install
 npm run dev
 ```
 
-打开 `http://localhost:3000`。
+默认会通过 Turborepo 启动所有 workspace 的 `dev` 脚本。当前只有 Web 应用会真正启动，打开 `http://localhost:3000`。
+
+只启动 Web：
+
+```bash
+npm run dev:web
+```
+
+后续移动端项目 scaffold 后，可以用：
+
+```bash
+npm run dev:mobile
+```
+
+## Vercel 部署
+
+如果把 Web 作为独立 Vercel 项目部署，项目的 Root Directory 设置为：
+
+```text
+packages/web
+```
+
+移动端调试时可以让客户端请求本地 Web API，例如 `http://localhost:3000/api/...`。之后如果 API 需要独立出来，可以再拆成单独的 `packages/api`。
 
 ## 环境变量
 
-复制 `.env.example` 为 `.env.local`，按需填写：
+复制 `packages/web/.env.example` 为 `packages/web/.env.local`，按需填写：
 
 ```bash
-cp .env.example .env.local
+cp packages/web/.env.example packages/web/.env.local
 ```
 
 AI 生成：

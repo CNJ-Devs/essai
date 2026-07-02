@@ -1,0 +1,8 @@
+{
+  "name": "@essai/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "echo \"Mobile package is not scaffolded yet.\""
+  }
+}
