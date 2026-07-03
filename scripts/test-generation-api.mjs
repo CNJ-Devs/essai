@@ -1,0 +1,515 @@
+#!/usr/bin/env node
+
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { createServer } from "node:net";
+import { setTimeout as sleep } from "node:timers/promises";
+
+const repoRoot = new URL("..", import.meta.url).pathname;
+const providerDefaults = {
+  openai: "gpt-5.4-mini",
+  deepseek: "deepseek-v4-pro",
+  anthropic: "claude-sonnet-5",
+};
+
+main().catch((error) => {
+  console.error(`\n[failed] ${error.message}`);
+  if (error.details) {
+    console.error(JSON.stringify(error.details, null, 2));
+  }
+  process.exit(1);
+});
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const providers = collectProviders(args);
+
+  if (providers.length === 0) {
+    console.log("No provider keys found. The script will only run mock tests.");
+    console.log(
+      "Pass keys with --openai-key, --deepseek-key, --anthropic-key, or matching env vars.",
+    );
+  }
+
+  const port = await choosePort(args.port ?? 3010);
+  const baseUrl = `http://localhost:${port}`;
+  const keys = await createEncryptionKeys();
+  if (args.build || (!args.skipBuild && !hasProductionBuild())) {
+    await buildWeb();
+  } else {
+    console.log("Using existing @essai/web production build.");
+  }
+  const server = await startServer({ keys, port });
+
+  try {
+    console.log(`Generation API smoke server: ${baseUrl}`);
+    await runMockSuite({ baseUrl, keys });
+
+    for (const provider of providers) {
+      await runProviderSuite({ baseUrl, keys, provider });
+    }
+
+    console.log("\nAll generation API smoke tests passed.");
+  } finally {
+    server.kill();
+  }
+}
+
+async function runMockSuite({ baseUrl, keys }) {
+  const generationId = `smoke_mock_${Date.now()}`;
+  const titleId = `smoke_title_mock_${Date.now()}`;
+
+  console.log("\n[mock] encrypted generation");
+  const generation = await postJson(
+    baseUrl,
+    "/api/generations",
+    await encryptRequest(keys, {
+      provider: "mock",
+      generations: [
+        {
+          id: generationId,
+          payload: sampleDraftPayload(),
+        },
+      ],
+      options: {
+        maxOutputTokens: 256,
+      },
+    }),
+  );
+  assert(generation.ok, "mock generation returned ok=false", generation);
+  assert(
+    generation.records?.[0]?.status === "succeeded",
+    "mock generation did not succeed",
+    generation,
+  );
+  assert(
+    typeof generation.records?.[0]?.output?.content === "string",
+    "mock generation returned no content",
+    generation,
+  );
+
+  console.log("[mock] encrypted title");
+  const title = await postJson(
+    baseUrl,
+    "/api/generation-title",
+    await encryptRequest(keys, {
+      id: titleId,
+      provider: "mock",
+      payload: {
+        fragment: {
+          id: "fragment_smoke",
+          content: "给这条碎片自动生成一个标题。",
+        },
+      },
+      options: {
+        maxOutputTokens: 96,
+      },
+    }),
+  );
+  assert(title.ok, "mock title returned ok=false", title);
+  assert(title.record?.status === "succeeded", "mock title did not succeed", title);
+
+  console.log("[mock] pull");
+  const pulled = await postJson(baseUrl, "/api/generations/pull", {
+    ids: [generationId, titleId, "smoke_missing"],
+  });
+  assert(pulled.ok, "pull returned ok=false", pulled);
+  assert(
+    pulled.records?.length === 2 && pulled.missing?.length === 1,
+    "pull did not return expected records/missing ids",
+    pulled,
+  );
+
+  console.log("[mock] cleanup");
+  const cleaned = await postJson(baseUrl, "/api/generations/cleanup", {
+    ids: [generationId, titleId],
+  });
+  assert(cleaned.ok, "cleanup returned ok=false", cleaned);
+  assert(cleaned.deletedCount === 2, "cleanup deleted unexpected count", cleaned);
+}
+
+async function runProviderSuite({ baseUrl, keys, provider }) {
+  const generationId = `smoke_${provider.name}_${Date.now()}`;
+  const titleId = `smoke_title_${provider.name}_${Date.now()}`;
+  const model = provider.model ?? providerDefaults[provider.name];
+
+  console.log(`\n[${provider.name}] encrypted generation (${model})`);
+  const generation = await postJson(
+    baseUrl,
+    "/api/generations",
+    await encryptRequest(keys, {
+      provider: provider.name,
+      model,
+      encryptedApiKey: await encryptApiKey(keys, provider.apiKey),
+      generations: [
+        {
+          id: generationId,
+          payload: sampleDraftPayload(),
+        },
+      ],
+      options: {
+        maxOutputTokens: 512,
+      },
+      timeoutMs: 240000,
+    }),
+  );
+  assert(generation.ok, `${provider.name} generation returned ok=false`, generation);
+  assert(
+    generation.records?.[0]?.status === "succeeded",
+    `${provider.name} generation did not succeed`,
+    generation,
+  );
+  assert(
+    typeof generation.records?.[0]?.output?.content === "string" &&
+      generation.records[0].output.content.length > 0,
+    `${provider.name} generation returned no content`,
+    generation,
+  );
+
+  console.log(`[${provider.name}] pull generation`);
+  const pulledGeneration = await postJson(baseUrl, "/api/generations/pull", {
+    ids: [generationId],
+  });
+  assert(
+    pulledGeneration.records?.[0]?.status === "succeeded",
+    `${provider.name} pull did not find succeeded generation`,
+    pulledGeneration,
+  );
+
+  console.log(`[${provider.name}] encrypted title (${model})`);
+  const title = await postJson(
+    baseUrl,
+    "/api/generation-title",
+    await encryptRequest(keys, {
+      id: titleId,
+      provider: provider.name,
+      model,
+      encryptedApiKey: await encryptApiKey(keys, provider.apiKey),
+      payload: {
+        fragment: {
+          id: "fragment_smoke",
+          content:
+            "今天想到一个点：轻量记录比完整写作更重要，先把念头留下，之后总会找到展开的方法。",
+        },
+      },
+      options: {
+        maxOutputTokens: 96,
+      },
+      timeoutMs: 120000,
+    }),
+  );
+  assert(title.ok, `${provider.name} title returned ok=false`, title);
+  assert(title.record?.status === "succeeded", `${provider.name} title did not succeed`, title);
+  assert(typeof title.title === "string" && title.title.length > 0, "title is empty", title);
+
+  console.log(`[${provider.name}] cleanup`);
+  const cleaned = await postJson(baseUrl, "/api/generations/cleanup", {
+    ids: [generationId, titleId],
+  });
+  assert(cleaned.ok, `${provider.name} cleanup returned ok=false`, cleaned);
+}
+
+async function startServer({ keys, port }) {
+  const child = spawn(
+    "npm",
+    ["--workspace", "@essai/web", "run", "start", "--", "--port", String(port)],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        API_KEY_ENCRYPTION_PRIVATE_JWK: JSON.stringify(keys.apiPrivateJwk),
+        REQUEST_ENCRYPTION_PRIVATE_JWK: JSON.stringify(keys.requestPrivateJwk),
+        NEXT_TELEMETRY_DISABLED: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  const logs = [];
+
+  child.stdout.on("data", (chunk) => {
+    pushLog(logs, chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    pushLog(logs, chunk);
+  });
+
+  await waitForServer(`http://localhost:${port}`, logs, child);
+
+  return child;
+}
+
+async function waitForServer(baseUrl, logs, child) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < 60_000) {
+    if (child.exitCode !== null) {
+      throw withDetails("dev server exited before becoming ready", {
+        exitCode: child.exitCode,
+        logs,
+      });
+    }
+
+    try {
+      const response = await fetch(baseUrl, { signal: AbortSignal.timeout(1000) });
+      if (response.status < 500) {
+        return;
+      }
+    } catch {
+      // Keep polling until Next dev is ready.
+    }
+
+    await sleep(500);
+  }
+
+  throw withDetails("timed out waiting for dev server", { logs });
+}
+
+async function buildWeb() {
+  console.log("Building @essai/web before smoke test...");
+
+  await new Promise((resolve, reject) => {
+    const child = spawn("npm", ["--workspace", "@essai/web", "run", "build"], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        NEXT_TELEMETRY_DISABLED: "1",
+      },
+      stdio: "inherit",
+    });
+
+    child.once("exit", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`web build failed with exit code ${code}`));
+      }
+    });
+  });
+}
+
+async function postJson(baseUrl, path, body) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  const data = parseJson(text);
+
+  if (!response.ok) {
+    throw withDetails(`POST ${path} failed with ${response.status}`, data);
+  }
+
+  return data;
+}
+
+async function createEncryptionKeys() {
+  const [apiPair, requestPair] = await Promise.all([rsaPair(), rsaPair()]);
+
+  return {
+    apiPrivateJwk: await crypto.subtle.exportKey("jwk", apiPair.privateKey),
+    apiPublicKey: apiPair.publicKey,
+    requestPrivateJwk: await crypto.subtle.exportKey("jwk", requestPair.privateKey),
+    requestPublicKey: requestPair.publicKey,
+  };
+}
+
+async function encryptRequest(keys, innerRequest) {
+  const aesKey = await crypto.subtle.generateKey(
+    { name: "AES-GCM", length: 256 },
+    true,
+    ["encrypt", "decrypt"],
+  );
+  const aesRaw = await crypto.subtle.exportKey("raw", aesKey);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    aesKey,
+    new TextEncoder().encode(JSON.stringify(innerRequest)),
+  );
+  const encryptedKey = await crypto.subtle.encrypt(
+    { name: "RSA-OAEP" },
+    keys.requestPublicKey,
+    aesRaw,
+  );
+
+  return {
+    schemaVersion: 1,
+    encryptedRequest: {
+      alg: "A256GCM+RSA-OAEP-256",
+      encryptedKey: toBase64Url(encryptedKey),
+      iv: toBase64Url(iv),
+      ciphertext: toBase64Url(ciphertext),
+      encoding: "base64url",
+    },
+  };
+}
+
+async function encryptApiKey(keys, apiKey) {
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "RSA-OAEP" },
+    keys.apiPublicKey,
+    new TextEncoder().encode(apiKey),
+  );
+
+  return {
+    alg: "RSA-OAEP-256",
+    ciphertext: toBase64Url(ciphertext),
+    encoding: "base64url",
+  };
+}
+
+async function rsaPair() {
+  return crypto.subtle.generateKey(
+    {
+      name: "RSA-OAEP",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["encrypt", "decrypt"],
+  );
+}
+
+async function choosePort(preferredPort) {
+  for (let port = preferredPort; port < preferredPort + 20; port += 1) {
+    if (await isPortFree(port)) {
+      return port;
+    }
+  }
+
+  throw new Error(`No free port found from ${preferredPort} to ${preferredPort + 19}.`);
+}
+
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const server = createServer();
+
+    server.once("error", () => resolve(false));
+    server.once("listening", () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+function collectProviders(args) {
+  return [
+    providerFromArgs("openai", args.openaiKey, args.openaiModel),
+    providerFromArgs("deepseek", args.deepseekKey, args.deepseekModel),
+    providerFromArgs("anthropic", args.anthropicKey, args.anthropicModel),
+  ].filter(Boolean);
+}
+
+function providerFromArgs(name, apiKey, model) {
+  const envName = `${name.toUpperCase()}_API_KEY`;
+  const resolvedKey = apiKey || process.env[envName];
+
+  if (!resolvedKey) {
+    return null;
+  }
+
+  return {
+    apiKey: resolvedKey,
+    model: model || process.env[`${name.toUpperCase()}_MODEL`] || providerDefaults[name],
+    name,
+  };
+}
+
+function parseArgs(argv) {
+  const args = {};
+  const booleanFlags = new Set(["build", "skipBuild"]);
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!arg.startsWith("--")) {
+      continue;
+    }
+
+    const [rawKey, inlineValue] = arg.slice(2).split("=");
+    const key = camelCase(rawKey);
+    const nextValue = argv[index + 1];
+    const isBoolean = booleanFlags.has(key);
+    const value =
+      inlineValue ??
+      (isBoolean || nextValue?.startsWith("--") ? "true" : nextValue);
+
+    if (inlineValue === undefined && !isBoolean && !nextValue?.startsWith("--")) {
+      index += 1;
+    }
+
+    if (isBoolean) {
+      args[key] = value !== "false";
+    } else if (key === "port") {
+      args[key] = Number(value);
+    } else {
+      args[key] = value;
+    }
+  }
+
+  return args;
+}
+
+function sampleDraftPayload() {
+  return {
+    fragment: {
+      id: "fragment_smoke",
+      content:
+        "今天想到一个点：轻量记录比完整写作更重要。很多时候不是没有想法，而是太早要求自己把想法做完整。",
+    },
+    scheme: {
+      id: "scheme_smoke",
+      name: "自然口播",
+      description: "整理成一版自然、清楚、可以继续编辑的短口播初稿。",
+    },
+    laws: [
+      {
+        id: "law_smoke",
+        name: "像正常说话",
+        content: "保留自然语气，不要写得像课程大纲。",
+      },
+    ],
+  };
+}
+
+function hasProductionBuild() {
+  return existsSync(new URL("../packages/web/.next/BUILD_ID", import.meta.url));
+}
+
+function pushLog(logs, chunk) {
+  logs.push(chunk.toString());
+  while (logs.length > 40) {
+    logs.shift();
+  }
+}
+
+function parseJson(text) {
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return { raw: text };
+  }
+}
+
+function assert(condition, message, details) {
+  if (!condition) {
+    throw withDetails(message, details);
+  }
+}
+
+function withDetails(message, details) {
+  const error = new Error(message);
+  error.details = details;
+  return error;
+}
+
+function toBase64Url(value) {
+  return Buffer.from(value).toString("base64url");
+}
+
+function camelCase(value) {
+  return value.replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+}

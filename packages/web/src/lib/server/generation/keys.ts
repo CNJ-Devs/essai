@@ -1,0 +1,40 @@
+import type { EncryptedApiKey, Provider } from "./schemas";
+import { decryptApiKey } from "./encryption";
+import { GenerationRequestError } from "./errors";
+
+export async function resolveProviderApiKey({
+  explicitApiKey,
+  encryptedApiKey,
+  provider,
+  request,
+}: {
+  explicitApiKey?: string;
+  encryptedApiKey?: EncryptedApiKey;
+  provider: Provider;
+  request: Request;
+}) {
+  if (provider === "mock") {
+    return "";
+  }
+
+  if (encryptedApiKey) {
+    return decryptApiKey(encryptedApiKey);
+  }
+
+  const auth = request.headers.get("authorization");
+  const bearer = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  const headerKey = request.headers.get("x-provider-api-key")?.trim();
+  const envKey = process.env[`${provider.toUpperCase()}_API_KEY`]?.trim();
+  const apiKey = explicitApiKey || headerKey || bearer || envKey;
+
+  if (!apiKey) {
+    throw new GenerationRequestError(
+      "missing_api_key",
+      `Missing API key for ${provider}. Pass apiKey, encryptedApiKey, Authorization: Bearer, x-provider-api-key, or ${provider.toUpperCase()}_API_KEY.`,
+      401,
+      401,
+    );
+  }
+
+  return apiKey;
+}
