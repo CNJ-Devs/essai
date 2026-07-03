@@ -14,6 +14,7 @@
     "build:web": "npm --workspace @essai/web run build",
     "start:web": "npm --workspace @essai/web run start --",
     "lint": "turbo lint",
+    "test:generation-api": "node scripts/test-generation-api.mjs",
     "db:generate": "npm --workspace @essai/web run db:generate",
     "db:push": "npm --workspace @essai/web run db:push",
     "db:studio": "npm --workspace @essai/web run db:studio"
