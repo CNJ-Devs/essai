@@ -1,15 +1,35 @@
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
-import { useEffect, useMemo, useState } from "react";
-import { NavigationContainer } from "@react-navigation/native";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
+import * as SystemUI from "expo-system-ui";
+import dayjs from "dayjs";
+import calendar from "dayjs/plugin/calendar";
+import relativeTime from "dayjs/plugin/relativeTime";
+import "dayjs/locale/zh-cn";
+import i18next from "i18next";
+import JSZip from "jszip";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createNavigationContainerRef,
+  NavigationContainer,
+  StackActions,
+} from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import type { StyleProp, ViewStyle } from "react-native";
+import Carousel, { type ICarouselInstance } from "react-native-reanimated-carousel";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import type {
+  StyleProp,
+  TextLayoutEvent,
+  TextStyle,
+  ViewStyle,
+} from "react-native";
 import {
   KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -18,31 +38,65 @@ import {
   View,
 } from "react-native";
 import {
+  SafeAreaProvider,
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
+import {
   ArrowLeft,
+  Bot,
   BookOpenText,
-  CircleEllipsis,
+  Check,
+  ChevronLeft,
+  ChevronRight,
   Download,
+  Eye,
   FileText,
   Info,
   KeyRound,
+  Languages,
   LibraryBig,
+  Palette,
+  PencilLine,
   Plus,
+  RotateCcw,
+  Settings,
+  Trash2,
   Upload,
+  WandSparkles,
   X,
   type LucideIcon,
 } from "lucide-react-native";
 
 type Count = 1 | 2 | 3;
 type TabId = "fragments" | "schemes" | "laws" | "more";
+type ThemeId = "parchment" | "sage" | "rose" | "sky" | "mint" | "dark";
+type LanguageId = "system" | "zh-Hans" | "en";
+type ProviderId = "openai" | "deepseek" | "anthropic";
 
 type RootStackParamList = {
   Home: undefined;
   FragmentDetail: { id: string };
+  DraftDetail: { fragmentId: string; draftId: string };
   SchemeDetail: { id: string };
   LawDetail: { id: string };
+  AppearanceSettings: undefined;
+  LanguageSettings: undefined;
+  ModelSettings: undefined;
+  ExportSettings: undefined;
+  ImportSettings: undefined;
+  AboutSettings: undefined;
 };
 
 const RootStack = createNativeStackNavigator<RootStackParamList>();
+const rootNavigationRef = createNavigationContainerRef<RootStackParamList>();
+const androidSystemBarModalProps =
+  Platform.OS === "android"
+    ? ({
+        navigationBarTranslucent: true,
+        statusBarTranslucent: true,
+      } as const)
+    : {};
 
 type Scheme = {
   id: string;
@@ -94,131 +148,718 @@ type SchemeSelection = Record<
   }
 >;
 
-const initialLaws: Law[] = [
+type ThemeColors = {
+  background: string;
+  card: string;
+  cardBorder: string;
+  muted: string;
+  mutedBorder: string;
+  mutedSurface: string;
+  border: string;
+  text: string;
+  primary: string;
+  primaryText: string;
+  overlay: string;
+  secondary: string;
+  danger: string;
+  dangerSoft: string;
+};
+
+type AppTheme = {
+  id: ThemeId;
+  name: string;
+  description: string;
+  tone: string;
+  isDark?: boolean;
+  colors: ThemeColors;
+};
+
+type ProviderKeys = Record<ProviderId, string>;
+
+type ModelOption = {
+  id: string;
+  name: string;
+  providerId: ProviderId;
+  descriptionKey: string;
+};
+
+type AvailableModelOption = ModelOption & {
+  providerName: string;
+};
+
+type TranslateOptions = Record<string, string | number | boolean | null>;
+
+type TransferSectionId = "data" | "config";
+
+type PersistedMobileSettings = {
+  activeModelId?: string | null;
+  languageId?: LanguageId;
+  themeId?: ThemeId;
+  version: 1;
+};
+
+type BackupDataPayload = {
+  fragments: FragmentItem[];
+  laws: Law[];
+  schemes: Scheme[];
+};
+
+type ParsedBackupBundle = {
+  available: Record<TransferSectionId, boolean>;
+  data?: BackupDataPayload;
+  fileName: string;
+  settings?: Partial<PersistedMobileSettings>;
+};
+
+const mobileSettingsStorageKey = "essai.mobile.settings.v1";
+
+const mobileResources = {
+  "zh-Hans": {
+    translation: {
+      tabs: {
+        fragments: "拾光集",
+        schemes: "方案簿",
+        laws: "创作法典",
+        settings: "设置",
+      },
+      nav: {
+        backHint: "返回上一页再试一次。",
+      },
+      actions: {
+        cancel: "取消",
+        confirm: "确认",
+        save: "保存",
+        close: "关闭",
+        delete: "删除",
+        createScheme: "新建方案",
+        collectLaw: "收录法则",
+        collect: "收集",
+        draft: "出稿",
+        editContent: "调整内容",
+        editScheme: "编辑方案",
+        revise: "修订",
+        view: "查看",
+        retry: "重试",
+        jump: "跳转",
+        saveScheme: "保存方案",
+        createSchemeSubmit: "创建方案",
+        saveRevision: "保存修订",
+        collectRule: "收录",
+        gotIt: "知道了",
+        more: "更多",
+      },
+      common: {
+        draftCount: "{{count}} 稿",
+        countLabel: "稿次数",
+        processing: "处理中",
+        missingContent: "这条内容可能已经被删除，或者当前预览数据还没有同步过来。",
+      },
+      status: {
+        brewing: "生成中",
+        failed: "失败",
+        completed: "已成稿",
+      },
+      pages: {
+        fragments: {
+          slogan: "灵光乍现，也有去处。",
+          emptyTitle: "还没有碎片",
+          emptyDescription: "先拾起这一点，余下的交给时间。",
+          missingTitle: "碎片不见了",
+        },
+        schemes: {
+          slogan: "给灵感一条路，让同一种表达方式可以反复被调用。",
+          emptyTitle: "还没有出稿方案",
+          emptyDescription: "先写下一种可复用的表达路径，之后碎片就能沿着它自动酝酿成稿。",
+          missingTitle: "方案不见了",
+          detailLabel: "方案笺",
+          relatedFragmentsTitle: "此间拾遗",
+          noRelatedFragmentsTitle: "还没有碎片",
+          noRelatedFragmentsDescription: "当碎片经由这个方案成稿后，会出现在这里。",
+          noBoundLawsTitle: "还没有绑定创作法则",
+          noBoundLawsDescription: "编辑方案时可以从创作法典里选择法则。",
+          deleteTitle: "删除出稿方案",
+          deleteSubtitle: "「{{name}}」会从方案簿中移除。",
+        },
+        laws: {
+          slogan: "把你的表达经验收成条文，让每一次出稿都有迹可循。",
+          emptyTitle: "还没有创作法则",
+          emptyDescription: "先收录一条你想反复遵循的表达判断，它会成为之后出稿时可以引用的创作准则。",
+          missingTitle: "法则不见了",
+          detailLabel: "法则条文",
+          deleteTitle: "删除创作法则",
+          deleteSubtitle: "「{{name}}」会从创作法典中移除。",
+        },
+        drafts: {
+          missingTitle: "成稿不见了",
+          sectionTitle: "成稿",
+          emptyTitle: "还没有成稿",
+          emptyDescription: "可以先选择一个出稿方案，让这条碎片整理出第一版。",
+          pendingPreview: "这一稿还在处理中。",
+          contentTitle: "内容",
+          sourceTitle: "生成依据",
+          schemeTitle: "初稿方案",
+          lawsTitle: "创作法则",
+          noLaws: "这份方案暂时没有绑定创作法则。",
+          lawUnavailable: "这条法则暂时无法显示。",
+          schemeUnavailable: "当前预览里暂时没有这份方案的完整说明。",
+          jumpTitle: "跳到哪一稿",
+          editTitle: "编辑内容",
+          editPlaceholder: "调整这一稿的表达。",
+          deleteTitle: "删除这一稿",
+          deleteSubtitle: "只会删除当前这一稿，不会影响同一成稿卷里的其他稿次。",
+          snapshotA11y: "查看生成依据",
+          editA11y: "编辑稿件",
+          retryA11y: "重试生成",
+          deleteA11y: "删除稿件",
+        },
+        settings: {
+          title: "设置",
+          header: "设置",
+          appearanceTitle: "外观",
+          appearanceDescription: "更换界面配色。",
+          languageTitle: "语言",
+          languageDescription: "切换界面文字。",
+          modelTitle: "模型配置",
+          modelHeaderDescription: "服务与模型",
+          modelDescription: "管理生成服务与当前模型。",
+          aboutTitle: "关于 EssAI",
+          aboutHeaderDescription: "版本与说明",
+          exportTitle: "导出数据",
+          exportDescription: "保存一份本地备份。",
+          importTitle: "导入数据",
+          importDescription: "从备份恢复到当前设备。",
+          exportLead: "选择要放进导出包的内容。",
+          importLead: "选择备份文件后，再确认要导入的内容。",
+          exportDataTitle: "数据",
+          exportDataDescription: "碎片、方案、创作法则和成稿。",
+          exportConfigTitle: "配置",
+          exportConfigDescription: "主题、语言和模型选择等使用偏好。",
+          exportAction: "生成导出包",
+          importFileTitle: "备份文件",
+          importFileDescription: "先读取文件内容，再选择要导入的部分。",
+          chooseFileAction: "选择文件",
+          importAvailableTitle: "可导入内容",
+          importAction: "导入选中内容",
+          unavailable: "不可用",
+          exportDone: "导出包已生成。",
+          exportFailed: "导出失败，请稍后再试。",
+          importLoaded: "已读取：{{fileName}}",
+          importDone: "导入完成。",
+          importFailed: "无法读取这个备份文件。",
+          appearanceLead: "选择喜欢的界面颜色。",
+          languageLead: "选择界面显示语言。",
+          modelLead: "添加服务密钥后，选择一个当前用于生成的模型。",
+          serviceKeysTitle: "服务密钥",
+          activeModelTitle: "当前模型",
+          noModelTitle: "还没有可用模型",
+          noModelDescription: "添加一个服务密钥后，就可以选择模型。",
+          added: "已添加",
+          notAdded: "未添加",
+          homeAppearanceDescription: "{{theme}} · 界面配色",
+          homeModelDescription: "添加服务密钥后选择当前模型。",
+          aboutDescription: "版本、说明和相关信息。",
+        },
+      },
+      settings: {
+        language: {
+          systemName: "跟随系统",
+          systemDescription: "使用设备当前的语言设置。",
+          zhName: "简体中文",
+          zhDescription: "界面文字显示为中文。",
+          enName: "English",
+          enDescription: "Show the interface in English.",
+        },
+        themes: {
+          parchmentName: "羊皮纸",
+          parchmentDescription: "温暖、轻柔，适合日常记录。",
+          sageName: "青枝",
+          sageDescription: "更安静的绿色调，适合长时间记录。",
+          roseName: "蔷薇",
+          roseDescription: "偏红但不艳，适合更柔软的心情。",
+          skyName: "晴蓝",
+          skyDescription: "清爽、克制，适合把内容看清楚。",
+          mintName: "薄荷",
+          mintDescription: "更清新的浅色调，留白感更强。",
+          darkName: "夜色",
+          darkDescription: "暗黑模式，适合夜里低亮度使用。",
+        },
+        models: {
+          openaiDescription: "适合日常生成、改写和标题整理。",
+          openaiMiniDescription: "默认推荐，速度和效果比较均衡。",
+          openaiFullDescription: "适合更复杂的整理和改写。",
+          deepseekDescription: "适合轻量、批量的生成任务。",
+          deepseekProDescription: "适合质量要求更高的稿件。",
+          deepseekFlashDescription: "适合更快的轻量生成。",
+          anthropicDescription: "适合长文本整理、语气控制和改写。",
+          claudeSonnetDescription: "默认推荐，适合多数创作任务。",
+          claudeHaikuDescription: "更轻、更快，适合标题和短稿。",
+          claudeFableDescription: "适合更复杂的长稿整理。",
+        },
+      },
+      about: {
+        title: "EssAI",
+        subtitle: "一个把灵感碎片整理成可继续创作内容的个人工具。",
+        versionLabel: "版本",
+        versionValue: "0.1.0",
+        localTitle: "本地优先",
+        localDescription: "碎片、方案和创作法则以本机使用为核心，适合随手记录和随时整理。",
+        modelTitle: "自带模型密钥",
+        modelDescription: "生成能力由你选择的模型服务提供。密钥只用于请求对应服务。",
+        languageTitle: "语言",
+        languageDescription: "界面语言可以在设置中切换，已记录的内容保持原样。",
+      },
+      compose: {
+        title: "收集碎片",
+        description: "把这一刻想到的内容放进来就好，可以是一句话、一段素材，或者一个还没整理完整的想法。",
+        placeholder: "片段、判断、素材、吐槽、画面，甚至只是一个模糊的感觉，先写下来就好。",
+        schemeHelp: "如果想现在先出几版初稿，可以在下面选择方案和数量；也可以先收起来，之后在碎片札记里再慢慢出稿。",
+        noSchemesTitle: "还没有可选方案",
+        noSchemesDescription: "这条碎片可以先收起来；等方案簿里有方案后，再回来为它出稿。",
+        createTitleFallback: "新碎片",
+      },
+      schemeEditor: {
+        createTitle: "新建出稿方案",
+        editTitle: "编辑出稿方案",
+        description: "把身份、题材、平台、时长、语气、输出形态和禁忌写清楚，之后就能反复复用。",
+        nameLabel: "名称",
+        namePlaceholder: "例如：日常分享、读书感想、短视频口播...",
+        descriptionLabel: "说明",
+        descriptionPlaceholder: "例如：适合把零散想法整理成一段自然的分享。语气轻松一点，有自己的判断，不要太像正式文章...",
+        lawsLabel: "创作法则",
+        lawsDescription: "从创作法典里挑选要引用的法则，也可以在这里新增。",
+        noLawsTitle: "还没有可选法则",
+        noLawsDescription: "可以在法典里先收录一条。",
+        quickLawTitle: "新增法则",
+        quickLawDescription: "会先收进创作法典，并在这里自动选中。",
+        quickLawError: "名称和内容都填一下，就能先收进法典。",
+      },
+      lawEditor: {
+        createTitle: "收录创作法则",
+        editTitle: "修订创作法则",
+        description: "一条法则就是一条可复用的创作判断。出稿时，它会和方案一起影响内容的取舍、语气和结构。",
+        nameLabel: "名称",
+        namePlaceholder: "例如：黄金三秒...",
+        contentLabel: "内容",
+        contentPlaceholder: "例如：开头 3 秒内必须让观众知道这条内容和自己有什么关系...",
+        tagLabel: "标签",
+        addTagTitle: "新增标签",
+        tagPlaceholder: "例如：语气",
+      },
+      fragmentDetail: {
+        deleteTitle: "删除碎片",
+        deleteSubtitle: "这条碎片和它派生出的成稿都会被删除。",
+        editTitle: "调整内容",
+        editDescription: "把缺的、不准的地方补上，让这条碎片更贴近你现在的想法。",
+        editPlaceholder: "继续补充这条碎片...",
+        generateTitle: "选择出稿方案",
+        generateDescription: "选择这条碎片要走的出稿方案，也可以为同一个方案一次生成几版。",
+        generateHelp: "选择这条碎片要走的出稿方案，也可以为同一个方案一次生成几版。",
+        noSchemesDescription: "等方案簿里有方案后，再回来为它出稿。",
+      },
+    },
+  },
+  en: {
+    translation: {
+      tabs: {
+        fragments: "Sparks",
+        schemes: "Schemes",
+        laws: "Codex",
+        settings: "Settings",
+      },
+      nav: {
+        backHint: "Go back and try again.",
+      },
+      actions: {
+        cancel: "Cancel",
+        confirm: "Confirm",
+        save: "Save",
+        close: "Close",
+        delete: "Delete",
+        createScheme: "New Scheme",
+        collectLaw: "Add Rule",
+        collect: "Collect",
+        draft: "Draft",
+        editContent: "Adjust",
+        editScheme: "Edit Scheme",
+        revise: "Revise",
+        view: "View",
+        retry: "Retry",
+        jump: "Jump",
+        saveScheme: "Save Scheme",
+        createSchemeSubmit: "Create Scheme",
+        saveRevision: "Save Revision",
+        collectRule: "Add",
+        gotIt: "Got it",
+        more: "More",
+      },
+      common: {
+        draftCount: "{{count}} drafts",
+        countLabel: "Versions",
+        processing: "Processing",
+        missingContent: "This content may have been deleted or is not available in the preview.",
+      },
+      status: {
+        brewing: "Generating",
+        failed: "Failed",
+        completed: "Ready",
+      },
+      pages: {
+        fragments: {
+          slogan: "A spark has somewhere to go.",
+          emptyTitle: "No sparks yet",
+          emptyDescription: "Pick up this little piece. Let time take care of the rest.",
+          missingTitle: "Fragment not found",
+        },
+        schemes: {
+          slogan: "Give an idea a path, so the same way of writing can be used again.",
+          emptyTitle: "No schemes yet",
+          emptyDescription: "Create a reusable path for turning fragments into drafts.",
+          missingTitle: "Scheme not found",
+          detailLabel: "Scheme Note",
+          relatedFragmentsTitle: "Gathered Pieces",
+          noRelatedFragmentsTitle: "No fragments yet",
+          noRelatedFragmentsDescription: "Fragments drafted through this scheme will appear here.",
+          noBoundLawsTitle: "No creative rules yet",
+          noBoundLawsDescription: "Edit the scheme to choose rules from the Codex.",
+          deleteTitle: "Delete Scheme",
+          deleteSubtitle: "“{{name}}” will be removed from Schemes.",
+        },
+        laws: {
+          slogan: "Collect your writing instincts as rules, so every draft has a trace.",
+          emptyTitle: "No rules yet",
+          emptyDescription: "Add a reusable writing judgment that can guide future drafts.",
+          missingTitle: "Rule not found",
+          detailLabel: "Rule Entry",
+          deleteTitle: "Delete Rule",
+          deleteSubtitle: "“{{name}}” will be removed from the Codex.",
+        },
+        drafts: {
+          missingTitle: "Draft not found",
+          sectionTitle: "Drafts",
+          emptyTitle: "No drafts yet",
+          emptyDescription: "Choose a scheme to turn this fragment into a first draft.",
+          pendingPreview: "This draft is still processing.",
+          contentTitle: "Content",
+          sourceTitle: "Source",
+          schemeTitle: "Scheme",
+          lawsTitle: "Creative Rules",
+          noLaws: "This scheme has no creative rules yet.",
+          lawUnavailable: "This rule cannot be displayed.",
+          schemeUnavailable: "This scheme description is not available in the preview.",
+          jumpTitle: "Jump to Version",
+          editTitle: "Edit Content",
+          editPlaceholder: "Adjust this version.",
+          deleteTitle: "Delete This Version",
+          deleteSubtitle: "Only this version will be deleted. Other versions in this draft roll remain.",
+          snapshotA11y: "View source",
+          editA11y: "Edit draft",
+          retryA11y: "Retry generation",
+          deleteA11y: "Delete draft",
+        },
+        settings: {
+          title: "Settings",
+          header: "Settings",
+          appearanceTitle: "Appearance",
+          appearanceDescription: "Change the interface colors.",
+          languageTitle: "Language",
+          languageDescription: "Change the interface language.",
+          modelTitle: "Model Settings",
+          modelHeaderDescription: "Services and models",
+          modelDescription: "Manage generation services and the active model.",
+          aboutTitle: "About EssAI",
+          aboutHeaderDescription: "Version and notes",
+          exportTitle: "Export Data",
+          exportDescription: "Save a local backup.",
+          importTitle: "Import Data",
+          importDescription: "Restore from a backup on this device.",
+          exportLead: "Choose what goes into the export package.",
+          importLead: "Choose a backup file, then confirm what to import.",
+          exportDataTitle: "Data",
+          exportDataDescription: "Fragments, schemes, creative rules, and drafts.",
+          exportConfigTitle: "Settings",
+          exportConfigDescription: "Theme, language, model choice, and preferences.",
+          exportAction: "Create Export Package",
+          importFileTitle: "Backup File",
+          importFileDescription: "Read the file first, then choose what to import.",
+          chooseFileAction: "Choose File",
+          importAvailableTitle: "Importable Content",
+          importAction: "Import Selected Content",
+          unavailable: "Unavailable",
+          exportDone: "Export package created.",
+          exportFailed: "Export failed. Please try again.",
+          importLoaded: "Loaded: {{fileName}}",
+          importDone: "Import complete.",
+          importFailed: "This backup file could not be read.",
+          appearanceLead: "Choose a color theme you like.",
+          languageLead: "Choose the interface language.",
+          modelLead: "Add a service key, then choose the model used for generation.",
+          serviceKeysTitle: "Service Keys",
+          activeModelTitle: "Active Model",
+          noModelTitle: "No model available",
+          noModelDescription: "Add a service key to choose a model.",
+          added: "Added",
+          notAdded: "Not added",
+          homeAppearanceDescription: "{{theme}} · Interface colors",
+          homeModelDescription: "Add a service key to choose the active model.",
+          aboutDescription: "Version, notes, and related information.",
+        },
+      },
+      settings: {
+        language: {
+          systemName: "Follow System",
+          systemDescription: "Use the device language setting.",
+          zhName: "Simplified Chinese",
+          zhDescription: "Show the interface in Chinese.",
+          enName: "English",
+          enDescription: "Show the interface in English.",
+        },
+        themes: {
+          parchmentName: "Parchment",
+          parchmentDescription: "Warm and gentle for everyday notes.",
+          sageName: "Sage",
+          sageDescription: "A quieter green for longer writing sessions.",
+          roseName: "Rose",
+          roseDescription: "Soft red tones without feeling loud.",
+          skyName: "Clear Sky",
+          skyDescription: "Fresh and restrained, with strong readability.",
+          mintName: "Mint",
+          mintDescription: "Light, fresh, and open.",
+          darkName: "Night",
+          darkDescription: "A dark theme for low-light use.",
+        },
+        models: {
+          openaiDescription: "Good for everyday drafting, rewriting, and titles.",
+          openaiMiniDescription: "Recommended by default, balancing speed and quality.",
+          openaiFullDescription: "Better for more complex restructuring and rewriting.",
+          deepseekDescription: "Good for lightweight and batch generation tasks.",
+          deepseekProDescription: "Better when draft quality matters more.",
+          deepseekFlashDescription: "Better for fast lightweight generation.",
+          anthropicDescription: "Good for long text, voice control, and rewriting.",
+          claudeSonnetDescription: "Recommended for most writing tasks.",
+          claudeHaikuDescription: "Lighter and faster for titles and short drafts.",
+          claudeFableDescription: "Better for complex long-form drafts.",
+        },
+      },
+      about: {
+        title: "EssAI",
+        subtitle: "A personal tool for turning scattered sparks into something you can keep writing.",
+        versionLabel: "Version",
+        versionValue: "0.1.0",
+        localTitle: "Local-first",
+        localDescription: "Fragments, schemes, and rules are centered around local use for quick capture and review.",
+        modelTitle: "Bring your own key",
+        modelDescription: "Generation is powered by the model service you choose. Keys are used only for that service.",
+        languageTitle: "Language",
+        languageDescription: "You can switch the interface language here. Your saved content stays as written.",
+      },
+      compose: {
+        title: "Collect Fragment",
+        description: "Add the content you have now: a sentence, a note, a feeling, or an unfinished thought.",
+        placeholder: "A line, a judgment, a material, a complaint, an image, or just a vague feeling. Write whatever came to mind.",
+        schemeHelp: "Choose schemes and counts if you want drafts now, or collect this fragment and draft later from its note.",
+        noSchemesTitle: "No schemes available",
+        noSchemesDescription: "You can collect this fragment now and come back after creating a scheme.",
+        createTitleFallback: "New Fragment",
+      },
+      schemeEditor: {
+        createTitle: "New Scheme",
+        editTitle: "Edit Scheme",
+        description: "Define the identity, topic, platform, length, voice, output shape, and boundaries for reuse.",
+        nameLabel: "Name",
+        namePlaceholder: "For example: Daily Share, Reading Notes, Short Video Script...",
+        descriptionLabel: "Description",
+        descriptionPlaceholder: "For example: Turn scattered thoughts into a natural post with a relaxed voice and a clear judgment...",
+        lawsLabel: "Creative Rules",
+        lawsDescription: "Pick rules from the Codex, or add one here.",
+        noLawsTitle: "No rules available",
+        noLawsDescription: "Add a rule in the Codex first.",
+        quickLawTitle: "New Rule",
+        quickLawDescription: "It will be added to the Codex and selected here.",
+        quickLawError: "Add both name and content to save this rule.",
+      },
+      lawEditor: {
+        createTitle: "Add Creative Rule",
+        editTitle: "Revise Creative Rule",
+        description: "A rule is a reusable creative judgment. It shapes what the draft keeps, removes, and emphasizes.",
+        nameLabel: "Name",
+        namePlaceholder: "For example: First Three Seconds...",
+        contentLabel: "Content",
+        contentPlaceholder: "For example: The first 3 seconds must show why this matters to the audience...",
+        tagLabel: "Tag",
+        addTagTitle: "Add Tag",
+        tagPlaceholder: "For example: Voice",
+      },
+      fragmentDetail: {
+        deleteTitle: "Delete Fragment",
+        deleteSubtitle: "This fragment and its derived drafts will be deleted.",
+        editTitle: "Adjust Content",
+        editDescription: "Fill in what is missing or inaccurate, so this fragment matches your current thinking.",
+        editPlaceholder: "Continue adding to this fragment...",
+        generateTitle: "Choose Scheme",
+        generateDescription: "Choose which schemes this fragment should use, and how many versions to create.",
+        generateHelp: "Choose which schemes this fragment should use, and how many versions to create.",
+        noSchemesDescription: "Create a scheme first, then come back to draft this fragment.",
+      },
+    },
+  },
+} as const;
+
+const mobileI18n = i18next.createInstance();
+
+dayjs.extend(calendar);
+dayjs.extend(relativeTime);
+
+void mobileI18n.init({
+  fallbackLng: "zh-Hans",
+  interpolation: { escapeValue: false },
+  lng: "zh-Hans",
+  resources: mobileResources,
+});
+
+let activeI18nLanguage: "zh-Hans" | "en" = "zh-Hans";
+let activeDayjsLocale = "zh-cn";
+
+function resolveI18nLanguage(languageId: LanguageId) {
+  if (languageId === "en") return "en";
+  if (languageId === "zh-Hans") return "zh-Hans";
+
+  const systemLocale =
+    Intl.DateTimeFormat().resolvedOptions().locale?.toLowerCase() ?? "";
+
+  return systemLocale.startsWith("zh") ? "zh-Hans" : "en";
+}
+
+function applyLanguage(languageId: LanguageId) {
+  activeI18nLanguage = resolveI18nLanguage(languageId);
+  activeDayjsLocale = activeI18nLanguage === "en" ? "en" : "zh-cn";
+}
+
+function tx(key: string, options?: TranslateOptions) {
+  return mobileI18n.t(key, { lng: activeI18nLanguage, ...options });
+}
+
+const initialLaws: Law[] = [];
+const initialSchemes: Scheme[] = [];
+const initialFragments: FragmentItem[] = [];
+
+const tabs: Array<{ id: TabId; labelKey: string; Icon: LucideIcon }> = [
+  { id: "fragments", labelKey: "tabs.fragments", Icon: FileText },
+  { id: "schemes", labelKey: "tabs.schemes", Icon: LibraryBig },
+  { id: "laws", labelKey: "tabs.laws", Icon: BookOpenText },
+  { id: "more", labelKey: "tabs.settings", Icon: Settings },
+];
+
+const languageOptions: Array<{
+  id: LanguageId;
+  nameKey?: string;
+  nativeName?: string;
+  descriptionKey: string;
+}> = [
   {
-    id: "law_plain_voice",
-    name: "像正常说话",
-    content: "保留自然语气，不要把每句话都写得像课程大纲。",
-    tags: ["语气", "表达"],
-    createdAt: daysAgo(5),
-    updatedAt: hoursAgo(20),
+    id: "system",
+    nameKey: "settings.language.systemName",
+    descriptionKey: "settings.language.systemDescription",
   },
   {
-    id: "law_concrete_scene",
-    name: "给一点现场",
-    content: "如果内容太抽象，优先补一个具体场景，让观点有落点。",
-    tags: ["结构", "场景"],
-    createdAt: daysAgo(4),
-    updatedAt: hoursAgo(14),
+    id: "zh-Hans",
+    nativeName: "简体中文",
+    descriptionKey: "settings.language.zhDescription",
   },
   {
-    id: "law_no_teaching",
-    name: "弱化说教感",
-    content: "避免直接替读者下结论，先把观察讲清楚，再让判断自然浮出来。",
-    tags: ["语气", "节奏"],
-    createdAt: daysAgo(2),
-    updatedAt: hoursAgo(8),
+    id: "en",
+    nativeName: "English",
+    descriptionKey: "settings.language.enDescription",
   },
 ];
 
-const initialSchemes: Scheme[] = [
+const modelProviders: Array<{
+  id: ProviderId;
+  name: string;
+  keyLabel: string;
+  keyPlaceholder: string;
+  descriptionKey: string;
+  models: ModelOption[];
+}> = [
   {
-    id: "scheme_daily_share",
-    name: "日常分享",
-    description:
-      "把零散想法整理成一段自然、有观点但不端着的表达。适合朋友圈、频道动态，或者一段轻量的个人更新。",
-    lawIds: ["law_plain_voice", "law_concrete_scene"],
-    createdAt: daysAgo(5),
-    updatedAt: hoursAgo(10),
+    id: "openai",
+    name: "OpenAI",
+    keyLabel: "OpenAI API Key",
+    keyPlaceholder: "sk-...",
+    descriptionKey: "settings.models.openaiDescription",
+    models: [
+      {
+        id: "openai:gpt-5.4-mini",
+        name: "GPT-5.4 mini",
+        providerId: "openai",
+        descriptionKey: "settings.models.openaiMiniDescription",
+      },
+      {
+        id: "openai:gpt-5.4",
+        name: "GPT-5.4",
+        providerId: "openai",
+        descriptionKey: "settings.models.openaiFullDescription",
+      },
+    ],
   },
   {
-    id: "scheme_short_video",
-    name: "短视频口播",
-    description:
-      "适合快速开场、观点明确、节奏更紧的口播初稿。开头要尽快给出钩子，中间保留清晰转折。",
-    lawIds: ["law_concrete_scene", "law_no_teaching"],
-    createdAt: daysAgo(4),
-    updatedAt: hoursAgo(7),
+    id: "deepseek",
+    name: "DeepSeek",
+    keyLabel: "DeepSeek API Key",
+    keyPlaceholder: "sk-...",
+    descriptionKey: "settings.models.deepseekDescription",
+    models: [
+      {
+        id: "deepseek:deepseek-v4-pro",
+        name: "DeepSeek V4 Pro",
+        providerId: "deepseek",
+        descriptionKey: "settings.models.deepseekProDescription",
+      },
+      {
+        id: "deepseek:deepseek-v4-flash",
+        name: "DeepSeek V4 Flash",
+        providerId: "deepseek",
+        descriptionKey: "settings.models.deepseekFlashDescription",
+      },
+    ],
   },
   {
-    id: "scheme_reading_note",
-    name: "读书感想",
-    description:
-      "把书里的一句话、一段联想，整理成更完整的个人表达。不要写成读后感作业，要保留自己的当下处境。",
-    lawIds: ["law_plain_voice"],
-    createdAt: daysAgo(3),
-    updatedAt: hoursAgo(5),
-  },
-  {
-    id: "scheme_one_minute",
-    name: "一分钟想法",
-    description:
-      "适合把一个判断压缩成一段可以直接说出口的内容，结尾留一点余味，不急着讲满。",
-    lawIds: ["law_plain_voice", "law_no_teaching"],
-    createdAt: daysAgo(2),
-    updatedAt: hoursAgo(3),
+    id: "anthropic",
+    name: "Anthropic",
+    keyLabel: "Anthropic API Key",
+    keyPlaceholder: "sk-ant-...",
+    descriptionKey: "settings.models.anthropicDescription",
+    models: [
+      {
+        id: "anthropic:claude-sonnet-5",
+        name: "Claude Sonnet 5",
+        providerId: "anthropic",
+        descriptionKey: "settings.models.claudeSonnetDescription",
+      },
+      {
+        id: "anthropic:claude-haiku-4.5",
+        name: "Claude Haiku 4.5",
+        providerId: "anthropic",
+        descriptionKey: "settings.models.claudeHaikuDescription",
+      },
+      {
+        id: "anthropic:claude-fable-5",
+        name: "Claude Fable 5",
+        providerId: "anthropic",
+        descriptionKey: "settings.models.claudeFableDescription",
+      },
+    ],
   },
 ];
 
-const initialFragments: FragmentItem[] = [
-  createFragmentSeed({
-    id: "fragment_street_note",
-    title: "便利店门口的停顿",
-    content:
-      "刚才路过便利店，看到有人站在门口回消息，突然想到很多内容其实不是没有想法，而是缺一个允许它先不完整的入口。",
-    createdAt: hoursAgo(2),
-    draftSchemes: [initialSchemes[0], initialSchemes[1]],
-  }),
-  createFragmentSeed({
-    id: "fragment_reading_note",
-    title: "读到一半时冒出来的问题",
-    content:
-      "读书的时候看到一句话：很多选择不是被想清楚的，而是在不断靠近里慢慢变清楚的。这个角度好像可以用来讲做产品，也可以拿来讲职业选择。它不是一个答案，更像是一种允许自己继续靠近的姿态。",
-    createdAt: hoursAgo(7),
-    draftSchemes: [initialSchemes[2]],
-  }),
-  createFragmentSeed({
-    id: "fragment_photo_hint",
-    title: "雨后路面的反光",
-    content:
-      "今天拍到一张雨后路面的照片，车灯反光很漂亮。也许可以作为一个开头：有些东西不是被照亮了才存在，而是终于找到了能反光的地方。",
-    createdAt: hoursAgo(26),
-    draftSchemes: [],
-  }),
-  createFragmentSeed({
-    id: "fragment_manager_prove",
-    title: "年轻管理者为什么总想证明自己",
-    content:
-      "年轻管理者好像特别容易陷入一个状态：明明已经在承担责任了，却还是想不断证明自己够格。证明本身没有错，但如果所有动作都围绕证明展开，团队会很累，自己也会很累。",
-    createdAt: daysAgo(2),
-    draftSchemes: [initialSchemes[0], initialSchemes[3]],
-  }),
-  createFragmentSeed({
-    id: "fragment_quiet_morning",
-    title: "早上没有打开电脑的十分钟",
-    content:
-      "早上醒来之后没有马上打开电脑，坐了一会儿。突然发现有些焦虑不是事情真的很多，而是自己太快进入了处理事情的状态。",
-    createdAt: daysAgo(3),
-    draftSchemes: [initialSchemes[0]],
-  }),
-  createFragmentSeed({
-    id: "fragment_product_name",
-    title: "名字不是标签，是入口",
-    content:
-      "想到产品命名的时候，名字不只是一个贴上去的标签。它更像入口，用户第一次靠近它的时候，名字会先告诉他：你可以用什么姿态进入这里。",
-    createdAt: daysAgo(4),
-    draftSchemes: [initialSchemes[2], initialSchemes[3]],
-  }),
-];
-
-const tabs: Array<{ id: TabId; label: string; Icon: LucideIcon }> = [
-  { id: "fragments", label: "拾光集", Icon: FileText },
-  { id: "schemes", label: "方案簿", Icon: LibraryBig },
-  { id: "laws", label: "创作法典", Icon: BookOpenText },
-  { id: "more", label: "更多", Icon: CircleEllipsis },
-];
+const emptyProviderKeys: ProviderKeys = {
+  anthropic: "",
+  deepseek: "",
+  openai: "",
+};
 
 const quickLawTagMaxLength = 24;
+const fragmentMasonryMinColumnWidth = 156;
+const fragmentMasonryGap = 8;
 
 function NavigationHeaderTitle({
   title,
@@ -260,16 +901,66 @@ function mergeLawLists(primary: Law[], secondary: Law[]) {
   });
 }
 
+function createDefaultSchemeSelection(schemes: Scheme[]): SchemeSelection {
+  return Object.fromEntries(
+    schemes.map((scheme, index) => [
+      scheme.id,
+      {
+        selected: index === 0,
+        count: 1 as Count,
+      },
+    ]),
+  );
+}
+
+function withOpacity(color: string, opacity: number) {
+  const normalized = color.trim();
+  const hex = normalized.startsWith("#") ? normalized.slice(1) : normalized;
+  const expanded =
+    hex.length === 3
+      ? hex
+          .split("")
+          .map((value) => `${value}${value}`)
+          .join("")
+      : hex;
+
+  if (!/^[0-9a-fA-F]{6}$/.test(expanded)) {
+    return normalized;
+  }
+
+  const red = Number.parseInt(expanded.slice(0, 2), 16);
+  const green = Number.parseInt(expanded.slice(2, 4), 16);
+  const blue = Number.parseInt(expanded.slice(4, 6), 16);
+
+  return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
+}
+
 export default function App() {
+  const [themeId, setThemeId] = useState<ThemeId>("parchment");
+  const [languageId, setLanguageId] = useState<LanguageId>("system");
+  const activeTheme = getTheme(themeId);
+  applyTheme(themeId);
+  applyLanguage(languageId);
   const [activeTab, setActiveTab] = useState<TabId>("fragments");
   const [schemes, setSchemes] = useState<Scheme[]>(initialSchemes);
   const [laws, setLaws] = useState<Law[]>(initialLaws);
   const [fragments, setFragments] = useState<FragmentItem[]>(initialFragments);
+  const [providerKeys, setProviderKeys] =
+    useState<ProviderKeys>(emptyProviderKeys);
+  const [activeModelId, setActiveModelId] = useState<string | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
   const [schemeEditorOpen, setSchemeEditorOpen] = useState(false);
   const [lawEditorOpen, setLawEditorOpen] = useState(false);
   const [editingSchemeId, setEditingSchemeId] = useState<string | null>(null);
   const [editingLawId, setEditingLawId] = useState<string | null>(null);
+  const availableModels = useMemo(
+    () => getAvailableModels(providerKeys),
+    [providerKeys],
+  );
+  const activeModel =
+    availableModels.find((model) => model.id === activeModelId) ?? null;
 
   const editingScheme = useMemo(
     () => schemes.find((scheme) => scheme.id === editingSchemeId),
@@ -279,6 +970,77 @@ export default function App() {
     () => laws.find((law) => law.id === editingLawId),
     [laws, editingLawId],
   );
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+
+    void SystemUI.setBackgroundColorAsync(activeTheme.colors.background).catch(
+      () => undefined,
+    );
+  }, [activeTheme]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    readPersistedMobileSettings()
+      .then((parsed) => {
+        if (!parsed) return;
+
+        if (isThemeId(parsed.themeId)) {
+          setThemeId(parsed.themeId);
+        }
+
+        if (isLanguageId(parsed.languageId)) {
+          setLanguageId(parsed.languageId);
+        }
+
+        if (
+          typeof parsed.activeModelId === "string" ||
+          parsed.activeModelId === null
+        ) {
+          setActiveModelId(parsed.activeModelId);
+        }
+      })
+      .catch(() => {
+        // Broken local settings should not block the app shell.
+      })
+      .finally(() => {
+        if (mounted) {
+          setSettingsLoaded(true);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!settingsLoaded) return;
+
+    const payload: PersistedMobileSettings = {
+      activeModelId,
+      languageId,
+      themeId,
+      version: 1,
+    };
+
+    void writePersistedMobileSettings(payload).catch(() => undefined);
+  }, [activeModelId, languageId, settingsLoaded, themeId]);
+
+  useEffect(() => {
+    if (availableModels.length === 0) {
+      if (activeModelId !== null) {
+        setActiveModelId(null);
+      }
+      setModelMenuOpen(false);
+      return;
+    }
+
+    if (!availableModels.some((model) => model.id === activeModelId)) {
+      setActiveModelId(availableModels[0]?.id ?? null);
+    }
+  }, [activeModelId, availableModels]);
 
   function collectFragment(content: string, selection: SchemeSelection) {
     const createdAt = new Date().toISOString();
@@ -309,11 +1071,11 @@ export default function App() {
     return fragment.id;
   }
 
-  function renameFragment(fragmentId: string, title: string) {
+  function updateFragmentContent(fragmentId: string, content: string) {
     setFragments((current) =>
       current.map((fragment) =>
         fragment.id === fragmentId
-          ? { ...fragment, title, updatedAt: new Date().toISOString() }
+          ? { ...fragment, content, updatedAt: new Date().toISOString() }
           : fragment,
       ),
     );
@@ -432,12 +1194,13 @@ export default function App() {
     );
   }
 
-  function addDraft(fragmentId: string, scheme: Scheme) {
+  function addDraft(fragmentId: string, scheme: Scheme, count: Count | number = 1) {
     setFragments((current) =>
       current.map((fragment) => {
         if (fragment.id !== fragmentId) return fragment;
 
         const now = new Date().toISOString();
+        const safeCount = Math.min(3, Math.max(1, Math.floor(count)));
         const existingDraft = fragment.drafts.find(
           (draft) => draft.schemeId === scheme.id,
         );
@@ -450,7 +1213,7 @@ export default function App() {
               createDraft({
                 scheme,
                 fragmentContent: fragment.content,
-                count: 1,
+                count: safeCount,
               }),
               ...fragment.drafts,
             ],
@@ -467,11 +1230,13 @@ export default function App() {
                     ...draft,
                     versions: [
                       ...draft.versions,
-                      createDraftVersion({
-                        scheme,
-                        fragmentContent: fragment.content,
-                        versionNo: draft.versions.length + 1,
-                      }),
+                      ...Array.from({ length: safeCount }, (_, index) =>
+                        createDraftVersion({
+                          scheme,
+                          fragmentContent: fragment.content,
+                          versionNo: draft.versions.length + index + 1,
+                        }),
+                      ),
                     ],
                   }
                 : draft,
@@ -481,6 +1246,59 @@ export default function App() {
                 new Date(latestDraftVersion(b)?.createdAt ?? 0).getTime() -
                 new Date(latestDraftVersion(a)?.createdAt ?? 0).getTime(),
             ),
+        };
+      }),
+    );
+  }
+
+  function appendDraftVersion(
+    fragmentId: string,
+    draftId: string,
+    version: DraftVersion,
+  ) {
+    setFragments((current) =>
+      current.map((fragment) => {
+        if (fragment.id !== fragmentId) return fragment;
+
+        return {
+          ...fragment,
+          updatedAt: version.createdAt,
+          drafts: fragment.drafts.map((draft) =>
+            draft.id === draftId
+              ? {
+                  ...draft,
+                  versions: [...draft.versions, version],
+                }
+              : draft,
+          ),
+        };
+      }),
+    );
+  }
+
+  function deleteDraftVersion(
+    fragmentId: string,
+    draftId: string,
+    versionId: string,
+  ) {
+    const now = new Date().toISOString();
+
+    setFragments((current) =>
+      current.map((fragment) => {
+        if (fragment.id !== fragmentId) return fragment;
+
+        return {
+          ...fragment,
+          updatedAt: now,
+          drafts: fragment.drafts.flatMap((draft) => {
+            if (draft.id !== draftId) return [draft];
+
+            const versions = draft.versions.filter(
+              (version) => version.id !== versionId,
+            );
+
+            return versions.length > 0 ? [{ ...draft, versions }] : [];
+          }),
         };
       }),
     );
@@ -496,32 +1314,56 @@ export default function App() {
     setLawEditorOpen(true);
   }
 
+  function pushStack<RouteName extends keyof RootStackParamList>(
+    routeName: RouteName,
+    params: RootStackParamList[RouteName],
+  ) {
+    if (!rootNavigationRef.isReady()) return;
+
+    rootNavigationRef.dispatch(StackActions.push(routeName, params));
+  }
+
   return (
-    <>
-      <StatusBar style="dark" />
-      <NavigationContainer>
-        <RootStack.Navigator
-          screenOptions={({ navigation }) => ({
-            animation: "slide_from_right",
-            contentStyle: { backgroundColor: colors.background },
-            headerBackVisible: false,
-            headerLeft: () => (
-              <NavigationBackButton onPress={() => navigation.goBack()} />
-            ),
-            headerShadowVisible: true,
-            headerStyle: { backgroundColor: colors.background },
-            headerTitleAlign: "left",
-          })}
-        >
+    <GestureHandlerRootView style={styles.gestureRoot}>
+      <SafeAreaProvider>
+        <StatusBar style={activeTheme.isDark ? "light" : "dark"} />
+        <NavigationContainer ref={rootNavigationRef}>
+          <RootStack.Navigator
+            screenOptions={({ navigation }) => ({
+              animation: "slide_from_right",
+              contentStyle: { backgroundColor: colors.background },
+              headerBackButtonDisplayMode: "minimal",
+              headerBackButtonMenuEnabled: false,
+              headerBackVisible: false,
+              headerLeft: () =>
+                navigation.canGoBack() ? (
+                  <NavigationBackButton onPress={() => navigation.goBack()} />
+                ) : null,
+              headerShadowVisible: true,
+              headerStyle: { backgroundColor: colors.background },
+              headerTintColor: colors.text,
+              headerTitleAlign: "center",
+              unstable_headerLeftItems: () =>
+                navigation.canGoBack()
+                  ? [
+                      {
+                        element: (
+                          <NavigationBackButton
+                            onPress={() => navigation.goBack()}
+                          />
+                        ),
+                        hidesSharedBackground: true,
+                        type: "custom" as const,
+                      },
+                    ]
+                  : [],
+            })}
+          >
           <RootStack.Screen name="Home" options={{ headerShown: false }}>
             {({ navigation }) => (
-              <SafeAreaView style={styles.safeArea}>
+              <View style={styles.safeArea}>
                 <View style={styles.shell}>
-                  <ScrollView
-                    style={styles.content}
-                    contentContainerStyle={styles.contentInner}
-                    showsVerticalScrollIndicator={false}
-                  >
+                  <HomeScrollView>
                     {activeTab === "fragments" ? (
                       <FragmentsView
                         fragments={fragments}
@@ -545,13 +1387,31 @@ export default function App() {
                       />
                     ) : null}
 
-                    {activeTab === "more" ? <MoreView /> : null}
-                  </ScrollView>
+                    {activeTab === "more" ? (
+                      <MoreView
+                        activeModel={activeModel}
+                        activeTheme={activeTheme}
+                        languageId={languageId}
+                        onOpenAppearance={() =>
+                          navigation.push("AppearanceSettings")
+                        }
+                        onOpenAbout={() => navigation.push("AboutSettings")}
+                        onOpenExport={() => navigation.push("ExportSettings")}
+                        onOpenImport={() => navigation.push("ImportSettings")}
+                        onOpenLanguage={() =>
+                          navigation.push("LanguageSettings")
+                        }
+                        onOpenModelSettings={() =>
+                          navigation.push("ModelSettings")
+                        }
+                      />
+                    ) : null}
+                  </HomeScrollView>
 
                   {activeTab === "schemes" ? (
                     <PageFloatingAction
                       Icon={LibraryBig}
-                      label="新建方案"
+                      label={tx("actions.createScheme")}
                       onPress={openSchemeEditor}
                     />
                   ) : null}
@@ -559,7 +1419,7 @@ export default function App() {
                   {activeTab === "laws" ? (
                     <PageFloatingAction
                       Icon={BookOpenText}
-                      label="收录法则"
+                      label={tx("actions.collectLaw")}
                       onPress={openLawEditor}
                     />
                   ) : null}
@@ -571,56 +1431,152 @@ export default function App() {
                   />
                 </View>
 
-                {composeOpen ? (
-                  <ComposeSheet
-                    schemes={schemes}
-                    onClose={() => setComposeOpen(false)}
-                    onSubmit={(content, selection) => {
-                      const id = collectFragment(content, selection);
-                      navigation.push("FragmentDetail", { id });
-                    }}
-                  />
-                ) : null}
-
-                {schemeEditorOpen ? (
-                  <SchemeEditor
-                    initialScheme={editingScheme}
-                    laws={laws}
-                    onClose={() => {
-                      setSchemeEditorOpen(false);
-                      setEditingSchemeId(null);
-                    }}
-                    onCreateLaw={createLawFromSchemeEditor}
-                    onSubmit={(name, description, lawIds) => {
-                      const wasEditing = Boolean(editingSchemeId);
-                      const id = saveScheme(name, description, lawIds);
-
-                      if (!wasEditing) {
-                        navigation.push("SchemeDetail", { id });
-                      }
-                    }}
-                  />
-                ) : null}
-
-                {lawEditorOpen ? (
-                  <LawEditor
-                    initialLaw={editingLaw}
-                    onClose={() => {
-                      setLawEditorOpen(false);
-                      setEditingLawId(null);
-                    }}
-                    onSubmit={(name, content, tags) => {
-                      const wasEditing = Boolean(editingLawId);
-                      const id = saveLaw(name, content, tags);
-
-                      if (!wasEditing) {
-                        navigation.push("LawDetail", { id });
-                      }
-                    }}
-                  />
-                ) : null}
-              </SafeAreaView>
+              </View>
             )}
+          </RootStack.Screen>
+
+          <RootStack.Screen
+            name="AppearanceSettings"
+            options={{
+              headerTitle: () => (
+                <NavigationHeaderTitle
+                  description={tx("pages.settings.appearanceDescription")}
+                  title={tx("pages.settings.appearanceTitle")}
+                />
+              ),
+            }}
+          >
+            {() => (
+              <AppearanceSettings
+                activeThemeId={themeId}
+                onChangeTheme={setThemeId}
+              />
+            )}
+          </RootStack.Screen>
+
+          <RootStack.Screen
+            name="LanguageSettings"
+            options={{
+              headerTitle: () => (
+                <NavigationHeaderTitle
+                  description={tx("pages.settings.languageDescription")}
+                  title={tx("pages.settings.languageTitle")}
+                />
+              ),
+            }}
+          >
+            {() => (
+              <LanguageSettings
+                languageId={languageId}
+                onChangeLanguage={setLanguageId}
+              />
+            )}
+          </RootStack.Screen>
+
+          <RootStack.Screen
+            name="ModelSettings"
+            options={{
+              headerTitle: () => (
+                <NavigationHeaderTitle
+                  description={tx("pages.settings.modelHeaderDescription")}
+                  title={tx("pages.settings.modelTitle")}
+                />
+              ),
+            }}
+          >
+            {() => (
+              <ModelSettings
+                activeModel={activeModel}
+                activeModelId={activeModelId}
+                availableModels={availableModels}
+                modelMenuOpen={modelMenuOpen}
+                providerKeys={providerKeys}
+                onChangeActiveModel={(modelId) => {
+                  setActiveModelId(modelId);
+                  setModelMenuOpen(false);
+                }}
+                onChangeProviderKey={(providerId, value) => {
+                  setProviderKeys((current) => ({
+                    ...current,
+                    [providerId]: value,
+                  }));
+                }}
+                onToggleModelMenu={() =>
+                  setModelMenuOpen((current) => !current)
+                }
+              />
+            )}
+          </RootStack.Screen>
+
+          <RootStack.Screen
+            name="ExportSettings"
+            options={{
+              headerTitle: () => (
+                <NavigationHeaderTitle
+                  description={tx("pages.settings.exportDescription")}
+                  title={tx("pages.settings.exportTitle")}
+                />
+              ),
+            }}
+          >
+            {() => (
+              <ExportSettings
+                data={{ fragments, laws, schemes }}
+                settings={{ activeModelId, languageId, themeId, version: 1 }}
+              />
+            )}
+          </RootStack.Screen>
+
+          <RootStack.Screen
+            name="ImportSettings"
+            options={{
+              headerTitle: () => (
+                <NavigationHeaderTitle
+                  description={tx("pages.settings.importDescription")}
+                  title={tx("pages.settings.importTitle")}
+                />
+              ),
+            }}
+          >
+            {() => (
+              <ImportSettings
+                onImportData={(data) => {
+                  setFragments(data.fragments);
+                  setLaws(data.laws);
+                  setSchemes(data.schemes);
+                }}
+                onImportSettings={(settings) => {
+                  if (isThemeId(settings.themeId)) {
+                    setThemeId(settings.themeId);
+                  }
+
+                  if (isLanguageId(settings.languageId)) {
+                    setLanguageId(settings.languageId);
+                  }
+
+                  if (
+                    typeof settings.activeModelId === "string" ||
+                    settings.activeModelId === null
+                  ) {
+                    setActiveModelId(settings.activeModelId);
+                  }
+                }}
+              />
+            )}
+          </RootStack.Screen>
+
+          <RootStack.Screen
+            name="AboutSettings"
+            options={{
+              headerTitle: () => (
+                <NavigationHeaderTitle
+                  description={tx("pages.settings.aboutHeaderDescription")}
+                  title={tx("pages.settings.aboutTitle")}
+                />
+              ),
+            }}
+          >
+            {() => <AboutSettings />}
           </RootStack.Screen>
 
           <RootStack.Screen
@@ -636,9 +1592,9 @@ export default function App() {
                     description={
                       fragment
                         ? formatDate(fragment.createdAt)
-                        : "返回上一页再试一次。"
+                        : tx("nav.backHint")
                     }
-                    title={fragment?.title ?? "碎片不见了"}
+                    title={fragment?.title ?? tx("pages.fragments.missingTitle")}
                   />
                 ),
               };
@@ -650,7 +1606,9 @@ export default function App() {
               );
 
               if (!fragment) {
-                return <MissingStackScreen title="碎片不见了" />;
+                return (
+                  <MissingStackScreen title={tx("pages.fragments.missingTitle")} />
+                );
               }
 
               return (
@@ -662,7 +1620,102 @@ export default function App() {
                     deleteFragment(fragment.id);
                     navigation.goBack();
                   }}
-                  onRename={renameFragment}
+                  onOpenDraft={(draftId) =>
+                    navigation.push("DraftDetail", {
+                      draftId,
+                      fragmentId: fragment.id,
+                    })
+                  }
+                  onUpdateContent={updateFragmentContent}
+                />
+              );
+            }}
+          </RootStack.Screen>
+
+          <RootStack.Screen
+            name="DraftDetail"
+            options={({ route }) => {
+              const fragment = fragments.find(
+                (item) => item.id === route.params.fragmentId,
+              );
+              const draft = fragment?.drafts.find(
+                (item) => item.id === route.params.draftId,
+              );
+
+              return {
+                headerTitle: () => (
+                  <NavigationHeaderTitle
+                    description={fragment?.title ?? tx("nav.backHint")}
+                    title={draft?.schemeName ?? tx("pages.drafts.missingTitle")}
+                  />
+                ),
+              };
+            }}
+          >
+            {({ navigation, route }) => {
+              const fragment = fragments.find(
+                (item) => item.id === route.params.fragmentId,
+              );
+              const draft = fragment?.drafts.find(
+                (item) => item.id === route.params.draftId,
+              );
+
+              if (!fragment || !draft) {
+                return (
+                  <MissingStackScreen title={tx("pages.drafts.missingTitle")} />
+                );
+              }
+
+              const scheme = schemes.find((item) => item.id === draft.schemeId);
+              const boundLaws = scheme
+                ? laws.filter((law) => scheme.lawIds.includes(law.id))
+                : [];
+
+              return (
+                <DraftDetail
+                  draft={draft}
+                  laws={boundLaws}
+                  scheme={scheme}
+                  onDeleteVersion={(versionId) => {
+                    const shouldLeave = draft.versions.length <= 1;
+
+                    deleteDraftVersion(fragment.id, draft.id, versionId);
+
+                    if (shouldLeave) {
+                      navigation.goBack();
+                    }
+                  }}
+                  onEditVersion={(content) => {
+                    const version = createDraftVersionFromContent({
+                      content,
+                      versionNo: draft.versions.length + 1,
+                    });
+
+                    appendDraftVersion(fragment.id, draft.id, version);
+                    return version.id;
+                  }}
+                  onGenerate={() => {
+                    if (scheme) {
+                      addDraft(fragment.id, scheme);
+                    }
+                  }}
+                  onRetryVersion={() => {
+                    if (!scheme) return null;
+
+                    const version = createDraftVersion({
+                      scheme,
+                      fragmentContent: fragment.content,
+                      versionNo: draft.versions.length + 1,
+                    });
+
+                    appendDraftVersion(fragment.id, draft.id, version);
+                    return version.id;
+                  }}
+                  onViewScheme={() => {
+                    if (scheme) {
+                      navigation.push("SchemeDetail", { id: scheme.id });
+                    }
+                  }}
                 />
               );
             }}
@@ -676,8 +1729,10 @@ export default function App() {
               return {
                 headerTitle: () => (
                   <NavigationHeaderTitle
-                    description={scheme ? "方案笺" : "返回上一页再试一次。"}
-                    title={scheme?.name ?? "方案不见了"}
+                    description={
+                      scheme ? tx("pages.schemes.detailLabel") : tx("nav.backHint")
+                    }
+                    title={scheme?.name ?? tx("pages.schemes.missingTitle")}
                   />
                 ),
               };
@@ -687,7 +1742,9 @@ export default function App() {
               const scheme = schemes.find((item) => item.id === route.params.id);
 
               if (!scheme) {
-                return <MissingStackScreen title="方案不见了" />;
+                return (
+                  <MissingStackScreen title={tx("pages.schemes.missingTitle")} />
+                );
               }
 
               return (
@@ -719,8 +1776,10 @@ export default function App() {
               return {
                 headerTitle: () => (
                   <NavigationHeaderTitle
-                    description={law ? "法则条文" : "返回上一页再试一次。"}
-                    title={law?.name ?? "法则不见了"}
+                    description={
+                      law ? tx("pages.laws.detailLabel") : tx("nav.backHint")
+                    }
+                    title={law?.name ?? tx("pages.laws.missingTitle")}
                   />
                 ),
               };
@@ -730,7 +1789,7 @@ export default function App() {
               const law = laws.find((item) => item.id === route.params.id);
 
               if (!law) {
-                return <MissingStackScreen title="法则不见了" />;
+                return <MissingStackScreen title={tx("pages.laws.missingTitle")} />;
               }
 
               return (
@@ -750,7 +1809,47 @@ export default function App() {
           </RootStack.Screen>
         </RootStack.Navigator>
       </NavigationContainer>
-    </>
+      <ComposeSheet
+        schemes={schemes}
+        visible={composeOpen}
+        onClose={() => setComposeOpen(false)}
+        onSubmit={(content, selection) => {
+          const id = collectFragment(content, selection);
+          pushStack("FragmentDetail", { id });
+        }}
+      />
+      <SchemeEditor
+        initialScheme={editingScheme}
+        laws={laws}
+        visible={schemeEditorOpen}
+        onClose={() => setSchemeEditorOpen(false)}
+        onDismiss={() => setEditingSchemeId(null)}
+        onCreateLaw={createLawFromSchemeEditor}
+        onSubmit={(name, description, lawIds) => {
+          const wasEditing = Boolean(editingSchemeId);
+          const id = saveScheme(name, description, lawIds);
+
+          if (!wasEditing) {
+            pushStack("SchemeDetail", { id });
+          }
+        }}
+      />
+      <LawEditor
+        initialLaw={editingLaw}
+        visible={lawEditorOpen}
+        onClose={() => setLawEditorOpen(false)}
+        onDismiss={() => setEditingLawId(null)}
+        onSubmit={(name, content, tags) => {
+          const wasEditing = Boolean(editingLawId);
+          const id = saveLaw(name, content, tags);
+
+          if (!wasEditing) {
+            pushStack("LawDetail", { id });
+          }
+        }}
+      />
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -765,9 +1864,19 @@ function BottomNav({
 }) {
   const leftTabs = tabs.slice(0, 2);
   const rightTabs = tabs.slice(2);
+  const insets = useSafeAreaInsets();
 
   return (
-    <View style={styles.bottomNavWrap}>
+    <View
+      style={[
+        styles.bottomNavWrap,
+        {
+          bottom: Math.max(8, insets.bottom + 6),
+          left: 18 + insets.left,
+          right: 18 + insets.right,
+        },
+      ]}
+    >
       <View style={styles.bottomNav}>
         {leftTabs.map((tab) => (
           <BottomNavItem
@@ -788,7 +1897,7 @@ function BottomNav({
         ))}
       </View>
       <Pressable
-        aria-label="收集碎片"
+        aria-label={tx("compose.title")}
         style={styles.bottomNavCreateButton}
         onPress={onCreateFragment}
       >
@@ -818,7 +1927,7 @@ function BottomNavItem({
         strokeWidth={2.2}
       />
       <Text style={[styles.bottomNavText, active && styles.bottomNavTextActive]}>
-        {tab.label}
+        {tx(tab.labelKey)}
       </Text>
     </Pressable>
   );
@@ -833,11 +1942,97 @@ function PageFloatingAction({
   label: string;
   onPress: () => void;
 }) {
+  const insets = useSafeAreaInsets();
+
   return (
-    <Pressable style={styles.pageFloatingAction} onPress={onPress}>
+    <Pressable
+      style={[
+        styles.pageFloatingAction,
+        {
+          bottom: 88 + Math.max(0, insets.bottom),
+          right: 18 + insets.right,
+        },
+      ]}
+      onPress={onPress}
+    >
       <Icon color={colors.primaryText} size={18} strokeWidth={2.35} />
       <Text style={styles.pageFloatingActionText}>{label}</Text>
     </Pressable>
+  );
+}
+
+function HomeScrollView({ children }: { children: ReactNode }) {
+  const insets = useSafeAreaInsets();
+
+  return (
+    <ScrollView
+      style={styles.content}
+      contentContainerStyle={[
+        styles.contentInner,
+        {
+          paddingBottom: 104 + insets.bottom,
+          paddingLeft: 18 + insets.left,
+          paddingRight: 18 + insets.right,
+          paddingTop: 18 + insets.top,
+        },
+      ]}
+      showsVerticalScrollIndicator={false}
+    >
+      {children}
+    </ScrollView>
+  );
+}
+
+function StackScreenSurface({ children }: { children: ReactNode }) {
+  return <View style={styles.stackSafeArea}>{children}</View>;
+}
+
+function useStackDetailPadding(extraBottom = 0) {
+  const insets = useSafeAreaInsets();
+
+  return {
+    paddingBottom: 28 + insets.bottom + extraBottom,
+    paddingLeft: 18 + insets.left,
+    paddingRight: 18 + insets.right,
+  };
+}
+
+function DetailScrollView({
+  children,
+  keyboardShouldPersistTaps,
+}: {
+  children: ReactNode;
+  keyboardShouldPersistTaps?: "always" | "never" | "handled";
+}) {
+  const detailPadding = useStackDetailPadding();
+
+  return (
+    <ScrollView
+      style={styles.detailScroll}
+      contentContainerStyle={[styles.detailInner, detailPadding]}
+      keyboardShouldPersistTaps={keyboardShouldPersistTaps}
+      showsVerticalScrollIndicator={false}
+    >
+      {children}
+    </ScrollView>
+  );
+}
+
+function ModalSurface({ children }: { children: ReactNode }) {
+  const insets = useSafeAreaInsets();
+
+  return (
+    <View style={styles.modalShell}>
+      <SafeAreaView
+        edges={["right", "bottom", "left"]}
+        style={[
+          styles.modalSafeArea,
+          Platform.OS === "android" ? { paddingTop: insets.top + 14 } : null,
+        ]}
+      >
+        {children}
+      </SafeAreaView>
+    </View>
   );
 }
 
@@ -850,14 +2045,14 @@ function FragmentsView({
 }) {
   return (
     <View style={styles.pageStack}>
-      <PageHeader text="灵光乍现，也有去处。" />
+      <PageHeader text={tx("pages.fragments.slogan")} />
 
       {fragments.length > 0 ? (
         <FragmentMasonry fragments={fragments} onOpen={onOpen} />
       ) : (
         <EmptyState
-          title="还没有碎片"
-          description="先拾起这一点，余下的交给时间。"
+          title={tx("pages.fragments.emptyTitle")}
+          description={tx("pages.fragments.emptyDescription")}
         />
       )}
     </View>
@@ -873,7 +2068,7 @@ function SchemesView({
 }) {
   return (
     <View style={styles.pageStack}>
-      <PageHeader text="给灵感一条路，让同一种表达方式可以反复被调用。" />
+      <PageHeader text={tx("pages.schemes.slogan")} />
 
       {schemes.length > 0 ? (
         <View style={styles.listStack}>
@@ -883,8 +2078,8 @@ function SchemesView({
         </View>
       ) : (
         <EmptyState
-          title="还没有出稿方案"
-          description="先写下一种可复用的表达路径，之后碎片就能沿着它自动酝酿成稿。"
+          title={tx("pages.schemes.emptyTitle")}
+          description={tx("pages.schemes.emptyDescription")}
         />
       )}
       <View style={styles.pageFloatingActionSpacer} />
@@ -901,7 +2096,7 @@ function LawsView({
 }) {
   return (
     <View style={styles.pageStack}>
-      <PageHeader text="把你的表达经验收成条文，让每一次出稿都有迹可循。" />
+      <PageHeader text={tx("pages.laws.slogan")} />
 
       {laws.length > 0 ? (
         <View style={styles.listStack}>
@@ -911,8 +2106,8 @@ function LawsView({
         </View>
       ) : (
         <EmptyState
-          title="还没有创作法则"
-          description="先收录一条你想反复遵循的表达判断，它会成为之后出稿时可以引用的创作准则。"
+          title={tx("pages.laws.emptyTitle")}
+          description={tx("pages.laws.emptyDescription")}
         />
       )}
       <View style={styles.pageFloatingActionSpacer} />
@@ -952,7 +2147,8 @@ function FragmentMasonry({
   return (
     <AdaptiveMasonry
       items={fragments}
-      minColumnWidth={172}
+      gap={fragmentMasonryGap}
+      minColumnWidth={fragmentMasonryMinColumnWidth}
       estimateItemHeight={(fragment, columnWidth) =>
         estimateFragmentCardHeight(fragment, columnWidth)
       }
@@ -963,30 +2159,72 @@ function FragmentMasonry({
   );
 }
 
-function MoreView() {
+function MoreView({
+  activeModel,
+  activeTheme,
+  languageId,
+  onOpenAppearance,
+  onOpenAbout,
+  onOpenExport,
+  onOpenImport,
+  onOpenLanguage,
+  onOpenModelSettings,
+}: {
+  activeModel: AvailableModelOption | null;
+  activeTheme: AppTheme;
+  languageId: LanguageId;
+  onOpenAppearance: () => void;
+  onOpenAbout: () => void;
+  onOpenExport: () => void;
+  onOpenImport: () => void;
+  onOpenLanguage: () => void;
+  onOpenModelSettings: () => void;
+}) {
   return (
     <View style={styles.pageStack}>
-      <PageHeader text="导出、导入、密钥和关于，先都放在这里。" />
+      <PageHeader text={tx("pages.settings.header")} />
       <View style={styles.moreList}>
         <MoreItem
+          Icon={Palette}
+          title={tx("pages.settings.appearanceTitle")}
+          description={tx("pages.settings.homeAppearanceDescription", {
+            theme: getThemeName(activeTheme),
+          })}
+          onPress={onOpenAppearance}
+        />
+        <MoreItem
+          Icon={Languages}
+          title={tx("pages.settings.languageTitle")}
+          description={getLanguageName(languageId)}
+          onPress={onOpenLanguage}
+        />
+        <MoreItem
+          Icon={Bot}
+          title={tx("pages.settings.modelTitle")}
+          description={
+            activeModel
+              ? `${activeModel.providerName} · ${activeModel.name}`
+              : tx("pages.settings.homeModelDescription")
+          }
+          onPress={onOpenModelSettings}
+        />
+        <MoreItem
           Icon={Download}
-          title="导出数据"
-          description="把本地碎片、方案和创作法典整理成备份文件。"
+          title={tx("pages.settings.exportTitle")}
+          description={tx("pages.settings.exportDescription")}
+          onPress={onOpenExport}
         />
         <MoreItem
           Icon={Upload}
-          title="导入数据"
-          description="从备份文件恢复到当前设备。"
-        />
-        <MoreItem
-          Icon={KeyRound}
-          title="API Key"
-          description="之后可以在这里管理本机保存的模型服务密钥。"
+          title={tx("pages.settings.importTitle")}
+          description={tx("pages.settings.importDescription")}
+          onPress={onOpenImport}
         />
         <MoreItem
           Icon={Info}
-          title="关于 EssAI"
-          description="版本、说明和一些不常用的信息。"
+          title={tx("pages.settings.aboutTitle")}
+          description={tx("pages.settings.aboutDescription")}
+          onPress={onOpenAbout}
         />
       </View>
     </View>
@@ -997,13 +2235,15 @@ function MoreItem({
   Icon,
   title,
   description,
+  onPress,
 }: {
   Icon: LucideIcon;
   title: string;
   description: string;
+  onPress?: () => void;
 }) {
   return (
-    <Pressable style={styles.moreItem}>
+    <Pressable style={styles.moreItem} onPress={onPress}>
       <View style={styles.moreIcon}>
         <Icon color={colors.text} size={20} strokeWidth={2.1} />
       </View>
@@ -1013,6 +2253,538 @@ function MoreItem({
       </View>
       <Text style={styles.moreChevron}>›</Text>
     </Pressable>
+  );
+}
+
+function AppearanceSettings({
+  activeThemeId,
+  onChangeTheme,
+}: {
+  activeThemeId: ThemeId;
+  onChangeTheme: (themeId: ThemeId) => void;
+}) {
+  return (
+    <StackScreenSurface>
+      <DetailScrollView>
+        <Text style={styles.settingsLead}>
+          {tx("pages.settings.appearanceLead")}
+        </Text>
+        <View style={styles.themeGrid}>
+          {themeOptions.map((theme) => (
+            <Pressable
+              key={theme.id}
+              style={styles.themeOption}
+              onPress={() => onChangeTheme(theme.id)}
+            >
+              <View style={styles.themeSwatchRow}>
+                <View
+                  style={[
+                    styles.themeSwatchLarge,
+                    { backgroundColor: theme.colors.background },
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.themeSwatch,
+                    { backgroundColor: theme.colors.card },
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.themeSwatch,
+                    { backgroundColor: theme.colors.primary },
+                  ]}
+                />
+              </View>
+              <View style={styles.settingChoiceText}>
+                <Text style={styles.settingChoiceTitle}>
+                  {getThemeName(theme)}
+                </Text>
+                <Text style={styles.settingChoiceDescription}>
+                  {getThemeDescription(theme)}
+                </Text>
+              </View>
+              <SelectionMark selected={theme.id === activeThemeId} />
+            </Pressable>
+          ))}
+        </View>
+      </DetailScrollView>
+    </StackScreenSurface>
+  );
+}
+
+function LanguageSettings({
+  languageId,
+  onChangeLanguage,
+}: {
+  languageId: LanguageId;
+  onChangeLanguage: (languageId: LanguageId) => void;
+}) {
+  return (
+    <StackScreenSurface>
+      <DetailScrollView>
+        <Text style={styles.settingsLead}>
+          {tx("pages.settings.languageLead")}
+        </Text>
+        <View style={styles.settingsList}>
+          {languageOptions.map((language) => (
+            <SettingChoice
+              key={language.id}
+              description={getLanguageDescription(language.id)}
+              selected={language.id === languageId}
+              title={getLanguageName(language.id)}
+              onPress={() => onChangeLanguage(language.id)}
+            />
+          ))}
+        </View>
+      </DetailScrollView>
+    </StackScreenSurface>
+  );
+}
+
+function ModelSettings({
+  activeModel,
+  activeModelId,
+  availableModels,
+  modelMenuOpen,
+  providerKeys,
+  onChangeActiveModel,
+  onChangeProviderKey,
+  onToggleModelMenu,
+}: {
+  activeModel: AvailableModelOption | null;
+  activeModelId: string | null;
+  availableModels: AvailableModelOption[];
+  modelMenuOpen: boolean;
+  providerKeys: ProviderKeys;
+  onChangeActiveModel: (modelId: string) => void;
+  onChangeProviderKey: (providerId: ProviderId, value: string) => void;
+  onToggleModelMenu: () => void;
+}) {
+  return (
+    <StackScreenSurface>
+      <DetailScrollView keyboardShouldPersistTaps="handled">
+        <Text style={styles.settingsLead}>
+          {tx("pages.settings.modelLead")}
+        </Text>
+
+        <Text style={styles.sectionTitle}>
+          {tx("pages.settings.activeModelTitle")}
+        </Text>
+        <View style={styles.providerCard}>
+          <Pressable
+            disabled={availableModels.length === 0}
+            style={[
+              styles.modelSelectButton,
+              availableModels.length === 0 && styles.buttonDisabled,
+            ]}
+            onPress={onToggleModelMenu}
+          >
+            <View style={styles.settingChoiceText}>
+              <Text style={styles.settingChoiceTitle}>
+                {activeModel?.name ?? tx("pages.settings.noModelTitle")}
+              </Text>
+              <Text style={styles.settingChoiceDescription}>
+                {activeModel
+                  ? `${activeModel.providerName} · ${getModelDescription(activeModel)}`
+                  : tx("pages.settings.noModelDescription")}
+              </Text>
+            </View>
+            <ChevronRight
+              color={colors.muted}
+              size={18}
+              strokeWidth={2.35}
+              style={[
+                styles.modelSelectChevron,
+                modelMenuOpen && styles.modelSelectChevronOpen,
+              ]}
+            />
+          </Pressable>
+
+          {modelMenuOpen && availableModels.length > 0 ? (
+            <View style={styles.modelOptionList}>
+              {availableModels.map((model) => (
+                <SettingChoice
+                  key={model.id}
+                  description={`${model.providerName} · ${getModelDescription(model)}`}
+                  selected={model.id === activeModelId}
+                  title={model.name}
+                  onPress={() => onChangeActiveModel(model.id)}
+                />
+              ))}
+            </View>
+          ) : null}
+        </View>
+
+        <Text style={styles.sectionTitle}>
+          {tx("pages.settings.serviceKeysTitle")}
+        </Text>
+        <View style={styles.settingsList}>
+          {modelProviders.map((provider) => {
+            const configured = providerKeys[provider.id].trim().length > 0;
+
+            return (
+              <View key={provider.id} style={styles.providerCard}>
+                <View style={styles.providerHeader}>
+                  <View style={styles.settingChoiceText}>
+                    <Text style={styles.settingChoiceTitle}>{provider.name}</Text>
+                    <Text style={styles.settingChoiceDescription}>
+                      {tx(provider.descriptionKey)}
+                    </Text>
+                  </View>
+                  <Text
+                    style={[
+                      styles.providerStatus,
+                      configured && styles.providerStatusActive,
+                    ]}
+                  >
+                    {configured
+                      ? tx("pages.settings.added")
+                      : tx("pages.settings.notAdded")}
+                  </Text>
+                </View>
+                <Text style={styles.inputLabel}>{provider.keyLabel}</Text>
+                <TextInput
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder={provider.keyPlaceholder}
+                  placeholderTextColor={colors.muted}
+                  secureTextEntry
+                  style={styles.settingsInput}
+                  value={providerKeys[provider.id]}
+                  onChangeText={(value) =>
+                    onChangeProviderKey(provider.id, value)
+                  }
+                />
+              </View>
+            );
+          })}
+        </View>
+      </DetailScrollView>
+    </StackScreenSurface>
+  );
+}
+
+function ExportSettings({
+  data,
+  settings,
+}: {
+  data: BackupDataPayload;
+  settings: PersistedMobileSettings;
+}) {
+  const [selection, setSelection] = useState<Record<TransferSectionId, boolean>>(
+    {
+      config: true,
+      data: true,
+    },
+  );
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const canSubmit = Object.values(selection).some(Boolean);
+
+  function toggle(sectionId: TransferSectionId) {
+    setSelection((current) => ({
+      ...current,
+      [sectionId]: !current[sectionId],
+    }));
+  }
+
+  async function exportBundle() {
+    if (!canSubmit || busy) return;
+
+    setBusy(true);
+    setStatus(null);
+
+    try {
+      await writeBackupBundle({ data, selection, settings });
+      setStatus(tx("pages.settings.exportDone"));
+    } catch {
+      setStatus(tx("pages.settings.exportFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <SafeAreaView edges={["right", "bottom", "left"]} style={styles.stackSafeArea}>
+      <ScrollView
+        style={styles.detailScroll}
+        contentContainerStyle={styles.detailInner}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={styles.settingsLead}>{tx("pages.settings.exportLead")}</Text>
+        <View style={styles.settingsList}>
+          {(["data", "config"] as TransferSectionId[]).map((sectionId) => (
+            <TransferChoice
+              key={sectionId}
+              available
+              selected={selection[sectionId]}
+              sectionId={sectionId}
+              onPress={() => toggle(sectionId)}
+            />
+          ))}
+        </View>
+        {status ? <Text style={styles.settingsLead}>{status}</Text> : null}
+      </ScrollView>
+      <View style={styles.modalFooterRow}>
+        <Pressable
+          disabled={!canSubmit || busy}
+          style={[
+            styles.primaryButton,
+            (!canSubmit || busy) && styles.buttonDisabled,
+          ]}
+          onPress={exportBundle}
+        >
+          <Download color={colors.primaryText} size={17} strokeWidth={2.35} />
+          <Text style={styles.primaryButtonText}>
+            {tx("pages.settings.exportAction")}
+          </Text>
+        </Pressable>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function ImportSettings({
+  onImportData,
+  onImportSettings,
+}: {
+  onImportData: (data: BackupDataPayload) => void;
+  onImportSettings: (settings: Partial<PersistedMobileSettings>) => void;
+}) {
+  const [available, setAvailable] =
+    useState<Record<TransferSectionId, boolean> | null>(null);
+  const [bundle, setBundle] = useState<ParsedBackupBundle | null>(null);
+  const [selection, setSelection] = useState<Record<TransferSectionId, boolean>>(
+    {
+      config: false,
+      data: false,
+    },
+  );
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const canSubmit = Object.entries(selection).some(
+    ([sectionId, selected]) =>
+      selected && Boolean(available?.[sectionId as TransferSectionId]),
+  );
+
+  async function chooseFile() {
+    if (busy) return;
+
+    setBusy(true);
+    setStatus(null);
+
+    try {
+      const nextBundle = await pickBackupBundle();
+
+      if (!nextBundle) return;
+
+      setBundle(nextBundle);
+      setAvailable(nextBundle.available);
+      setSelection(nextBundle.available);
+      setStatus(
+        tx("pages.settings.importLoaded", { fileName: nextBundle.fileName }),
+      );
+    } catch {
+      setStatus(tx("pages.settings.importFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggle(sectionId: TransferSectionId) {
+    if (!available?.[sectionId]) return;
+
+    setSelection((current) => ({
+      ...current,
+      [sectionId]: !current[sectionId],
+    }));
+  }
+
+  function importSelected() {
+    if (!bundle || !canSubmit) return;
+
+    if (selection.data && bundle.data) {
+      onImportData(bundle.data);
+    }
+
+    if (selection.config && bundle.settings) {
+      onImportSettings(bundle.settings);
+    }
+
+    setStatus(tx("pages.settings.importDone"));
+  }
+
+  return (
+    <SafeAreaView edges={["right", "bottom", "left"]} style={styles.stackSafeArea}>
+      <ScrollView
+        style={styles.detailScroll}
+        contentContainerStyle={styles.detailInner}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={styles.settingsLead}>{tx("pages.settings.importLead")}</Text>
+        <View style={styles.providerCard}>
+          <Text style={styles.settingChoiceTitle}>
+            {tx("pages.settings.importFileTitle")}
+          </Text>
+          <Text style={styles.settingChoiceDescription}>
+            {tx("pages.settings.importFileDescription")}
+          </Text>
+          <Pressable
+            disabled={busy}
+            style={[styles.outlineButton, busy && styles.buttonDisabled]}
+            onPress={chooseFile}
+          >
+            <Upload color={colors.text} size={16} strokeWidth={2.35} />
+            <Text style={styles.outlineButtonText}>
+              {tx("pages.settings.chooseFileAction")}
+            </Text>
+          </Pressable>
+        </View>
+
+        {available ? (
+          <>
+            <Text style={styles.sectionTitle}>
+              {tx("pages.settings.importAvailableTitle")}
+            </Text>
+            <View style={styles.settingsList}>
+              {(["data", "config"] as TransferSectionId[]).map((sectionId) => (
+                <TransferChoice
+                  key={sectionId}
+                  available={available[sectionId]}
+                  selected={selection[sectionId]}
+                  sectionId={sectionId}
+                  onPress={() => toggle(sectionId)}
+                />
+              ))}
+            </View>
+          </>
+        ) : null}
+
+        {status ? <Text style={styles.settingsLead}>{status}</Text> : null}
+      </ScrollView>
+      <View style={styles.modalFooterRow}>
+        <Pressable
+          disabled={!canSubmit || busy}
+          style={[
+            styles.primaryButton,
+            (!canSubmit || busy) && styles.buttonDisabled,
+          ]}
+          onPress={importSelected}
+        >
+          <Upload color={colors.primaryText} size={17} strokeWidth={2.35} />
+          <Text style={styles.primaryButtonText}>
+            {tx("pages.settings.importAction")}
+          </Text>
+        </Pressable>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function TransferChoice({
+  available,
+  onPress,
+  sectionId,
+  selected,
+}: {
+  available: boolean;
+  onPress: () => void;
+  sectionId: TransferSectionId;
+  selected: boolean;
+}) {
+  const copy = getTransferSectionCopy(sectionId);
+
+  return (
+    <Pressable
+      disabled={!available}
+      style={[styles.settingChoice, !available && styles.buttonDisabled]}
+      onPress={onPress}
+    >
+      <View style={styles.settingChoiceText}>
+        <View style={styles.providerHeader}>
+          <Text style={styles.settingChoiceTitle}>{copy.title}</Text>
+          {!available ? (
+            <Text style={styles.providerStatus}>
+              {tx("pages.settings.unavailable")}
+            </Text>
+          ) : null}
+        </View>
+        <Text style={styles.settingChoiceDescription}>{copy.description}</Text>
+      </View>
+      <SelectionMark selected={selected && available} />
+    </Pressable>
+  );
+}
+
+function AboutSettings() {
+  const items = [
+    {
+      description: tx("about.versionValue"),
+      title: tx("about.versionLabel"),
+    },
+    {
+      description: tx("about.localDescription"),
+      title: tx("about.localTitle"),
+    },
+    {
+      description: tx("about.modelDescription"),
+      title: tx("about.modelTitle"),
+    },
+    {
+      description: tx("about.languageDescription"),
+      title: tx("about.languageTitle"),
+    },
+  ];
+
+  return (
+    <StackScreenSurface>
+      <DetailScrollView>
+        <Text style={styles.settingsLead}>{tx("about.subtitle")}</Text>
+        <View style={styles.settingsList}>
+          {items.map((item) => (
+            <View key={item.title} style={styles.providerCard}>
+              <Text style={styles.settingChoiceTitle}>{item.title}</Text>
+              <Text style={styles.settingChoiceDescription}>
+                {item.description}
+              </Text>
+            </View>
+          ))}
+        </View>
+      </DetailScrollView>
+    </StackScreenSurface>
+  );
+}
+
+function SettingChoice({
+  title,
+  description,
+  selected,
+  onPress,
+}: {
+  title: string;
+  description: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable style={styles.settingChoice} onPress={onPress}>
+      <View style={styles.settingChoiceText}>
+        <Text style={styles.settingChoiceTitle}>{title}</Text>
+        <Text style={styles.settingChoiceDescription}>{description}</Text>
+      </View>
+      <SelectionMark selected={selected} />
+    </Pressable>
+  );
+}
+
+function SelectionMark({ selected }: { selected: boolean }) {
+  return (
+    <View style={[styles.selectionMark, selected && styles.selectionMarkActive]}>
+      {selected ? (
+        <Check color={colors.primaryText} size={14} strokeWidth={3} />
+      ) : null}
+    </View>
   );
 }
 
@@ -1101,7 +2873,10 @@ function FragmentCard({
   fragment: FragmentItem;
   onOpen: (id: string) => void;
 }) {
-  const { columnWidth } = useColumnMetrics(172, 16);
+  const { columnWidth } = useColumnMetrics(
+    fragmentMasonryMinColumnWidth,
+    fragmentMasonryGap,
+  );
   const draftCount = fragment.drafts.reduce(
     (sum, draft) => sum + draft.versions.length,
     0,
@@ -1109,24 +2884,31 @@ function FragmentCard({
   const previewHeight = estimateFragmentPreviewHeight(fragment, columnWidth);
 
   return (
-    <Pressable style={styles.fragmentCard} onPress={() => onOpen(fragment.id)}>
-      <View style={[styles.fragmentPreviewArea, { height: previewHeight }]}>
-        <Text style={styles.fragmentPreviewText}>
-          {fragment.content}
-        </Text>
-        <LinearGradient
-          colors={["rgba(255, 253, 248, 0)", colors.card]}
-          style={[styles.fragmentPreviewFade, styles.noPointerEvents]}
-        />
-      </View>
+    <Pressable
+      style={styles.fragmentCardShadow}
+      onPress={() => onOpen(fragment.id)}
+    >
+      <View style={styles.fragmentCard}>
+        <View style={[styles.fragmentPreviewArea, { height: previewHeight }]}>
+          <Text style={styles.fragmentPreviewText}>{fragment.content}</Text>
+          <LinearGradient
+            colors={[withOpacity(colors.card, 0), colors.card]}
+            style={[styles.fragmentPreviewFade, styles.noPointerEvents]}
+          />
+        </View>
 
-      <View style={styles.fragmentFooter}>
-        <Text style={styles.cardTitle} numberOfLines={2}>
-          {fragment.title}
-        </Text>
-        <View style={styles.simpleMetaRow}>
-          <Text style={styles.mutedText}>{formatDate(fragment.createdAt)}</Text>
-          {draftCount > 0 ? <Text style={styles.mutedText}>{draftCount} 稿</Text> : null}
+        <View style={styles.fragmentFooter}>
+          <Text style={styles.cardTitle} numberOfLines={2}>
+            {fragment.title}
+          </Text>
+          <View style={styles.simpleMetaRow}>
+            <Text style={styles.mutedText}>{formatDate(fragment.createdAt)}</Text>
+            {draftCount > 0 ? (
+              <Text style={styles.mutedText}>
+                {tx("common.draftCount", { count: draftCount })}
+              </Text>
+            ) : null}
+          </View>
         </View>
       </View>
     </Pressable>
@@ -1141,19 +2923,21 @@ function SchemeCard({
   onOpen: (id: string) => void;
 }) {
   return (
-    <View style={styles.gridCard}>
-      <Pressable style={styles.gridCardContent} onPress={() => onOpen(scheme.id)}>
-        <Text style={styles.gridCardTitle} numberOfLines={2}>
-          {scheme.name}
-        </Text>
-        <Text style={styles.gridCardBody} numberOfLines={5}>
-          {summarize(scheme.description, 180)}
-        </Text>
-      </Pressable>
-      <View style={styles.gridCardFooter}>
-        <Text style={styles.mutedText}>{formatDate(scheme.updatedAt)}</Text>
+    <Pressable style={styles.gridCardShadow} onPress={() => onOpen(scheme.id)}>
+      <View style={styles.gridCard}>
+        <View style={styles.gridCardContent}>
+          <Text style={styles.gridCardTitle} numberOfLines={2}>
+            {scheme.name}
+          </Text>
+          <Text style={styles.gridCardBody} numberOfLines={5}>
+            {summarize(scheme.description, 180)}
+          </Text>
+        </View>
+        <View style={styles.gridCardFooter}>
+          <Text style={styles.mutedText}>{formatDate(scheme.updatedAt)}</Text>
+        </View>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -1165,55 +2949,61 @@ function LawCard({
   onOpen: (id: string) => void;
 }) {
   return (
-    <View style={styles.gridCard}>
-      <Pressable style={styles.gridCardContent} onPress={() => onOpen(law.id)}>
-        <Text style={styles.gridCardTitle} numberOfLines={2}>
-          {law.name}
-        </Text>
-        {law.tags.length > 0 ? (
-          <View style={styles.tagRow}>
-            {Array.from(new Set(law.tags))
-              .slice(0, 3)
-              .map((tag, index) => (
-                <Text key={`${law.id}-${tag}-${index}`} style={styles.tag}>
-                  {tag}
-                </Text>
-              ))}
-          </View>
-        ) : null}
-        <Text style={styles.gridCardBody} numberOfLines={5}>
-          {summarize(law.content, 160)}
-        </Text>
-      </Pressable>
-      <View style={styles.gridCardFooter}>
-        <Text style={styles.mutedText}>{formatDate(law.updatedAt)}</Text>
+    <Pressable style={styles.gridCardShadow} onPress={() => onOpen(law.id)}>
+      <View style={styles.gridCard}>
+        <View style={styles.gridCardContent}>
+          <Text style={styles.gridCardTitle} numberOfLines={2}>
+            {law.name}
+          </Text>
+          {law.tags.length > 0 ? (
+            <View style={styles.tagRow}>
+              {Array.from(new Set(law.tags))
+                .slice(0, 3)
+                .map((tag, index) => (
+                  <Text key={`${law.id}-${tag}-${index}`} style={styles.tag}>
+                    {tag}
+                  </Text>
+                ))}
+            </View>
+          ) : null}
+          <Text style={styles.gridCardBody} numberOfLines={5}>
+            {summarize(law.content, 160)}
+          </Text>
+        </View>
+        <View style={styles.gridCardFooter}>
+          <Text style={styles.mutedText}>{formatDate(law.updatedAt)}</Text>
+        </View>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
 function ComposeSheet({
   schemes,
+  visible,
   onClose,
   onSubmit,
 }: {
   schemes: Scheme[];
+  visible: boolean;
   onClose: () => void;
   onSubmit: (content: string, selection: SchemeSelection) => void;
 }) {
   const [content, setContent] = useState("");
   const [selection, setSelection] = useState<SchemeSelection>(() =>
-    Object.fromEntries(
-      schemes.map((scheme, index) => [
-        scheme.id,
-        {
-          selected: index === 0,
-          count: 1 as Count,
-        },
-      ]),
-    ),
+    createDefaultSchemeSelection(schemes),
   );
+  const insets = useSafeAreaInsets();
+  const floatingButtonBottom = insets.bottom + 14;
+  const scrollBottomPadding = floatingButtonBottom + 42 + 18;
   const canSubmit = content.trim().length > 0;
+
+  useEffect(() => {
+    if (!visible) return;
+
+    setContent("");
+    setSelection(createDefaultSchemeSelection(schemes));
+  }, [visible, schemes]);
 
   function setCount(schemeId: string, count: Count) {
     setSelection((current) => ({
@@ -1239,46 +3029,76 @@ function ComposeSheet({
   }
 
   return (
-    <Modal animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+    <Modal
+      {...androidSystemBarModalProps}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      visible={visible}
+      onRequestClose={onClose}
+    >
       <KeyboardAvoidingView
         behavior={Platform.select({ ios: "padding", default: undefined })}
         style={styles.modalShell}
       >
-        <SafeAreaView style={styles.modalSafeArea}>
+        <SafeAreaView
+          edges={["right", "left"]}
+          style={[
+            styles.modalSafeArea,
+            Platform.OS === "android" ? { paddingTop: insets.top + 14 } : null,
+          ]}
+        >
           <ModalHeader
-            description="把这一刻想到的内容放进来就好，可以是一句话、一段素材，或者一个还没整理完整的想法。"
+            description={tx("compose.description")}
             onClose={onClose}
-            title="收集碎片"
+            title={tx("compose.title")}
           />
 
-          <View style={styles.composeBody}>
-            <TextInput
-              value={content}
-              onChangeText={setContent}
-              multiline
-              textAlignVertical="top"
-              placeholder="片段、判断、素材、吐槽、画面，甚至只是一个模糊的感觉，先写下来就好。"
-              placeholderTextColor={colors.muted}
-              style={styles.composeInput}
-            />
-
-            <SchemeSelectionScroller
-              schemes={schemes}
-              selection={selection}
-              onCountChange={setCount}
-              onToggle={toggleScheme}
-            />
-          </View>
-
-          <View style={styles.modalFooter}>
-            <Pressable
-              disabled={!canSubmit}
-              style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
-              onPress={() => onSubmit(content.trim(), selection)}
+          <View style={styles.modalContentFrame}>
+            <ScrollView
+              style={styles.composeScroll}
+              contentContainerStyle={[
+                styles.composeScrollContent,
+                { paddingBottom: scrollBottomPadding },
+              ]}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
             >
-              <Text style={styles.primaryButtonIcon}>✦</Text>
-              <Text style={styles.primaryButtonText}>收集</Text>
-            </Pressable>
+              <TextInput
+                value={content}
+                onChangeText={setContent}
+                multiline
+                textAlignVertical="top"
+                placeholder={tx("compose.placeholder")}
+                placeholderTextColor={colors.muted}
+                style={[styles.composeInput, styles.composeInputCompact]}
+              />
+
+              <SchemeSelectionScroller
+                schemes={schemes}
+                selection={selection}
+                onCountChange={setCount}
+                onToggle={toggleScheme}
+              />
+            </ScrollView>
+
+            <View
+              pointerEvents="box-none"
+              style={[
+                styles.modalFloatingAction,
+                { bottom: floatingButtonBottom },
+              ]}
+            >
+              <Pressable
+                disabled={!canSubmit}
+                style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
+                onPress={() => onSubmit(content.trim(), selection)}
+              >
+                <Text style={styles.primaryButtonIcon}>✦</Text>
+                <Text style={styles.primaryButtonText}>
+                  {tx("actions.collect")}
+                </Text>
+              </Pressable>
+            </View>
           </View>
         </SafeAreaView>
       </KeyboardAvoidingView>
@@ -1300,7 +3120,7 @@ function SchemeSelectionScroller({
   return (
     <View style={styles.schemeSelectionBlock}>
       <Text style={styles.helpText}>
-        如果想现在先出几版初稿，可以在下面选择方案和数量；也可以先收起来，之后在碎片札记里再慢慢出稿。
+        {tx("compose.schemeHelp")}
       </Text>
       <View style={styles.scrollerFrame}>
         {schemes.length > 0 ? (
@@ -1315,11 +3135,14 @@ function SchemeSelectionScroller({
                 return (
                   <View
                     key={scheme.id}
-                    style={[
-                      styles.schemeTile,
-                      item.selected && styles.schemeTileSelected,
-                    ]}
+                    style={styles.schemeTile}
                   >
+                    <View
+                      style={[
+                        styles.selectionBorderOverlay,
+                        item.selected && styles.selectionBorderOverlaySelected,
+                      ]}
+                    />
                     <Pressable
                       style={styles.schemeTileTop}
                       onPress={() => onToggle(scheme.id)}
@@ -1342,7 +3165,9 @@ function SchemeSelectionScroller({
                       </Text>
                     </Pressable>
                     <View style={styles.schemeTileFooter}>
-                      <Text style={styles.mutedText}>稿次数</Text>
+                      <Text style={styles.mutedText}>
+                        {tx("common.countLabel")}
+                      </Text>
                       <View style={styles.countRow}>
                         {[1, 2, 3].map((count) => (
                           <Pressable
@@ -1376,8 +3201,8 @@ function SchemeSelectionScroller({
         ) : (
           <EmptyState
             compact
-            title="还没有可选方案"
-            description="这条碎片可以先收起来；等方案簿里有方案后，再回来为它出稿。"
+            title={tx("compose.noSchemesTitle")}
+            description={tx("compose.noSchemesDescription")}
           />
         )}
       </View>
@@ -1388,13 +3213,17 @@ function SchemeSelectionScroller({
 function SchemeEditor({
   initialScheme,
   laws,
+  visible,
   onClose,
+  onDismiss,
   onCreateLaw,
   onSubmit,
 }: {
   initialScheme?: Scheme;
   laws: Law[];
+  visible: boolean;
   onClose: () => void;
+  onDismiss: () => void;
   onCreateLaw: (name: string, content: string, tags: string[]) => Law;
   onSubmit: (name: string, description: string, lawIds: string[]) => void;
 }) {
@@ -1408,6 +3237,9 @@ function SchemeEditor({
   const [quickLawContent, setQuickLawContent] = useState("");
   const [quickLawTags, setQuickLawTags] = useState<string[]>([]);
   const [quickLawError, setQuickLawError] = useState<string | null>(null);
+  const insets = useSafeAreaInsets();
+  const floatingButtonBottom = insets.bottom + 14;
+  const scrollBottomPadding = floatingButtonBottom + 42 + 18;
   const canSubmit = name.trim().length > 0 && description.trim().length > 0;
   const canCreateLaw =
     quickLawName.trim().length > 0 && quickLawContent.trim().length > 0;
@@ -1415,6 +3247,19 @@ function SchemeEditor({
   useEffect(() => {
     setAvailableLaws((current) => mergeLawLists(laws, current));
   }, [laws]);
+
+  useEffect(() => {
+    if (!visible) return;
+
+    setAvailableLaws(laws);
+    setName(initialScheme?.name ?? "");
+    setDescription(initialScheme?.description ?? "");
+    setLawIds(initialScheme?.lawIds ?? []);
+    setQuickLawName("");
+    setQuickLawContent("");
+    setQuickLawTags([]);
+    setQuickLawError(null);
+  }, [visible, initialScheme?.id]);
 
   function toggleLaw(lawId: string) {
     setLawIds((current) =>
@@ -1429,7 +3274,7 @@ function SchemeEditor({
     const nextContent = quickLawContent.trim();
 
     if (!nextName || !nextContent) {
-      setQuickLawError("名称和内容都填一下，就能先收进法典。");
+      setQuickLawError(tx("schemeEditor.quickLawError"));
       return;
     }
 
@@ -1450,230 +3295,317 @@ function SchemeEditor({
   }
 
   return (
-    <Modal animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <SafeAreaView style={styles.modalSafeArea}>
-        <ModalHeader
-          description="把身份、题材、平台、时长、语气、输出形态和禁忌写清楚，之后就能反复复用。"
-          onClose={onClose}
-          title={initialScheme ? "编辑出稿方案" : "新建出稿方案"}
-        />
-        <ScrollView
-          style={styles.modalScroll}
-          contentContainerStyle={styles.formStack}
-          showsVerticalScrollIndicator={false}
+    <Modal
+      {...androidSystemBarModalProps}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      visible={visible}
+      onDismiss={onDismiss}
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalShell}>
+        <SafeAreaView
+          edges={["right", "left"]}
+          style={[
+            styles.modalSafeArea,
+            Platform.OS === "android" ? { paddingTop: insets.top + 14 } : null,
+          ]}
         >
-          <Text style={styles.inputLabel}>名称</Text>
-          <TextInput
-            value={name}
-            onChangeText={setName}
-            placeholder="例如：日常分享、读书感想、短视频口播..."
-            placeholderTextColor={colors.muted}
-            style={styles.singleInput}
+          <ModalHeader
+            description={tx("schemeEditor.description")}
+            onClose={onClose}
+            title={
+              initialScheme
+                ? tx("schemeEditor.editTitle")
+              : tx("schemeEditor.createTitle")
+            }
           />
-          <Text style={styles.inputLabel}>说明</Text>
-          <TextInput
-            value={description}
-            onChangeText={setDescription}
-            multiline
-            textAlignVertical="top"
-            placeholder="例如：适合把零散想法整理成一段自然的分享。语气轻松一点，有自己的判断，不要太像正式文章..."
-            placeholderTextColor={colors.muted}
-            style={styles.noteInput}
-          />
-          <Text style={styles.inputLabel}>创作法则</Text>
-          <Text style={styles.helpText}>
-            从创作法典里挑选要引用的法则，也可以在这里新增。
-          </Text>
-          {availableLaws.length > 0 ? (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.lawPickScroller}
-            >
-              <View style={styles.lawPickGrid}>
-                {availableLaws.map((law) => {
-                  const selected = lawIds.includes(law.id);
-                  return (
-                    <Pressable
-                      key={law.id}
-                      style={[
-                        styles.lawPickTile,
-                        selected && styles.lawPickTileSelected,
-                      ]}
-                      onPress={() => toggleLaw(law.id)}
-                    >
-                      <View
-                        style={[
-                          styles.lawPickSelectionBorder,
-                          { opacity: selected ? 1 : 0 },
-                        ]}
-                      />
-                      <View style={styles.lawPickTitleRow}>
-                        <Text style={styles.lawPickTitle} numberOfLines={1}>
-                          {law.name}
-                        </Text>
-                        <View
-                          style={[
-                            styles.lawPickCheck,
-                            { opacity: selected ? 1 : 0 },
-                          ]}
-                        >
-                          <Text style={styles.lawPickCheckText}>✓</Text>
-                        </View>
-                      </View>
-                      <Text style={styles.lawPickBody} numberOfLines={2}>
-                        {law.content}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </ScrollView>
-          ) : (
-            <EmptyState
-              compact
-              title="还没有可选法则"
-              description="可以在法典里先收录一条。"
-            />
-          )}
-
-          <View style={styles.quickLawBox}>
-            <View style={styles.quickLawHeader}>
-              <View style={styles.quickLawHeaderText}>
-                <Text style={styles.quickLawTitle}>新增法则</Text>
-                <Text style={styles.quickLawDescription}>
-                  会先收进创作法典，并在这里自动选中。
-                </Text>
-              </View>
-              <Pressable
-                disabled={!canCreateLaw}
-                style={[
-                  styles.quickLawButton,
-                  !canCreateLaw && styles.buttonDisabled,
-                ]}
-                onPress={createQuickLaw}
-              >
-                <Plus color={colors.primaryText} size={15} strokeWidth={2.4} />
-                <Text style={styles.primaryButtonText}>收录</Text>
-              </Pressable>
-            </View>
-
-            <View style={styles.quickLawFields}>
-              <View style={styles.quickLawField}>
-                <Text style={styles.inputLabel}>名称</Text>
-                <TextInput
-                  value={quickLawName}
-                  onChangeText={setQuickLawName}
-                  placeholder="例如：像正常说话..."
-                  placeholderTextColor={colors.muted}
-                  style={styles.singleInput}
-                />
-              </View>
-            </View>
-
-            <Text style={styles.inputLabel}>内容</Text>
+          <View style={styles.modalContentFrame}>
+          <ScrollView
+            style={styles.modalScroll}
+            contentContainerStyle={[
+              styles.formStack,
+              { paddingBottom: scrollBottomPadding },
+            ]}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <Text style={styles.inputLabel}>{tx("schemeEditor.nameLabel")}</Text>
             <TextInput
-              value={quickLawContent}
-              onChangeText={setQuickLawContent}
+              value={name}
+              onChangeText={setName}
+              placeholder={tx("schemeEditor.namePlaceholder")}
+              placeholderTextColor={colors.muted}
+              style={styles.singleInput}
+            />
+            <Text style={styles.inputLabel}>
+              {tx("schemeEditor.descriptionLabel")}
+            </Text>
+            <TextInput
+              value={description}
+              onChangeText={setDescription}
               multiline
               textAlignVertical="top"
-              placeholder="例如：保留自然语气，不要把每句话都写得像课程大纲。"
+              placeholder={tx("schemeEditor.descriptionPlaceholder")}
               placeholderTextColor={colors.muted}
-              style={styles.quickLawInput}
+              style={styles.noteInput}
             />
-            <TagEditor tags={quickLawTags} onChange={setQuickLawTags} />
-            {quickLawError ? (
-              <Text style={styles.errorText}>{quickLawError}</Text>
-            ) : null}
-          </View>
-        </ScrollView>
-        <View style={styles.modalFooter}>
-          <Pressable
-            disabled={!canSubmit}
-            style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
-            onPress={() => onSubmit(name.trim(), description.trim(), lawIds)}
-          >
-            <Text style={styles.primaryButtonText}>
-              {initialScheme ? "保存方案" : "创建方案"}
+            <Text style={styles.inputLabel}>{tx("schemeEditor.lawsLabel")}</Text>
+            <Text style={styles.helpText}>
+              {tx("schemeEditor.lawsDescription")}
             </Text>
-          </Pressable>
-        </View>
-      </SafeAreaView>
+            {availableLaws.length > 0 ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.lawPickScroller}
+              >
+                <View style={styles.lawPickGrid}>
+                  {availableLaws.map((law) => {
+                    const selected = lawIds.includes(law.id);
+                    return (
+                      <Pressable
+                        key={law.id}
+                        style={[
+                          styles.lawPickTile,
+                          selected && styles.lawPickTileSelected,
+                        ]}
+                        onPress={() => toggleLaw(law.id)}
+                      >
+                        <View
+                          style={[
+                            styles.lawPickSelectionBorder,
+                            { opacity: selected ? 1 : 0 },
+                          ]}
+                        />
+                        <View style={styles.lawPickTitleRow}>
+                          <Text style={styles.lawPickTitle} numberOfLines={1}>
+                            {law.name}
+                          </Text>
+                          <View
+                            style={[
+                              styles.lawPickCheck,
+                              { opacity: selected ? 1 : 0 },
+                            ]}
+                          >
+                            <Text style={styles.lawPickCheckText}>✓</Text>
+                          </View>
+                        </View>
+                        <Text style={styles.lawPickBody} numberOfLines={2}>
+                          {law.content}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </ScrollView>
+            ) : (
+              <EmptyState
+                compact
+                title={tx("schemeEditor.noLawsTitle")}
+                description={tx("schemeEditor.noLawsDescription")}
+              />
+            )}
+
+            <View style={styles.quickLawBox}>
+              <View style={styles.quickLawHeader}>
+                <View style={styles.quickLawHeaderText}>
+                  <Text style={styles.quickLawTitle}>
+                    {tx("schemeEditor.quickLawTitle")}
+                  </Text>
+                  <Text style={styles.quickLawDescription}>
+                    {tx("schemeEditor.quickLawDescription")}
+                  </Text>
+                </View>
+                <Pressable
+                  disabled={!canCreateLaw}
+                  style={[
+                    styles.quickLawButton,
+                    !canCreateLaw && styles.buttonDisabled,
+                  ]}
+                  onPress={createQuickLaw}
+                >
+                  <Plus color={colors.primaryText} size={15} strokeWidth={2.4} />
+                  <Text style={styles.primaryButtonText}>
+                    {tx("actions.collectRule")}
+                  </Text>
+                </Pressable>
+              </View>
+
+              <View style={styles.quickLawFields}>
+                <View style={styles.quickLawField}>
+                  <Text style={styles.inputLabel}>
+                    {tx("lawEditor.nameLabel")}
+                  </Text>
+                  <TextInput
+                    value={quickLawName}
+                    onChangeText={setQuickLawName}
+                    placeholder={tx("lawEditor.namePlaceholder")}
+                    placeholderTextColor={colors.muted}
+                    style={styles.singleInput}
+                  />
+                </View>
+              </View>
+
+              <Text style={styles.inputLabel}>{tx("lawEditor.contentLabel")}</Text>
+              <TextInput
+                value={quickLawContent}
+                onChangeText={setQuickLawContent}
+                multiline
+                textAlignVertical="top"
+                placeholder={tx("lawEditor.contentPlaceholder")}
+                placeholderTextColor={colors.muted}
+                style={styles.quickLawInput}
+              />
+              <TagEditor tags={quickLawTags} onChange={setQuickLawTags} />
+              {quickLawError ? (
+                <Text style={styles.errorText}>{quickLawError}</Text>
+              ) : null}
+            </View>
+          </ScrollView>
+          <View
+            pointerEvents="box-none"
+            style={[
+              styles.modalFloatingAction,
+              { bottom: floatingButtonBottom },
+            ]}
+          >
+            <Pressable
+              disabled={!canSubmit}
+              style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
+              onPress={() => onSubmit(name.trim(), description.trim(), lawIds)}
+            >
+              <Text style={styles.primaryButtonText}>
+                {initialScheme
+                  ? tx("actions.saveScheme")
+                  : tx("actions.createSchemeSubmit")}
+              </Text>
+            </Pressable>
+          </View>
+          </View>
+        </SafeAreaView>
+      </View>
     </Modal>
   );
 }
 
 function LawEditor({
   initialLaw,
+  visible,
   onClose,
+  onDismiss,
   onSubmit,
 }: {
   initialLaw?: Law;
+  visible: boolean;
   onClose: () => void;
+  onDismiss: () => void;
   onSubmit: (name: string, content: string, tags: string[]) => void;
 }) {
   const [name, setName] = useState(initialLaw?.name ?? "");
   const [content, setContent] = useState(initialLaw?.content ?? "");
   const [tags, setTags] = useState<string[]>(initialLaw?.tags ?? []);
+  const insets = useSafeAreaInsets();
+  const floatingButtonBottom = insets.bottom + 14;
+  const scrollBottomPadding = floatingButtonBottom + 42 + 18;
   const canSubmit = name.trim().length > 0 && content.trim().length > 0;
 
+  useEffect(() => {
+    if (!visible) return;
+
+    setName(initialLaw?.name ?? "");
+    setContent(initialLaw?.content ?? "");
+    setTags(initialLaw?.tags ?? []);
+  }, [visible, initialLaw?.id]);
+
   return (
-    <Modal animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <SafeAreaView style={styles.modalSafeArea}>
-        <ModalHeader
-          description="一条法则就是一条可复用的创作判断。出稿时，它会和方案一起影响内容的取舍、语气和结构。"
-          onClose={onClose}
-          title={initialLaw ? "修订创作法则" : "收录创作法则"}
-        />
-        <ScrollView
-          style={styles.modalScroll}
-          contentContainerStyle={styles.formStack}
-          showsVerticalScrollIndicator={false}
+    <Modal
+      {...androidSystemBarModalProps}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      visible={visible}
+      onDismiss={onDismiss}
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalShell}>
+        <SafeAreaView
+          edges={["right", "left"]}
+          style={[
+            styles.modalSafeArea,
+            Platform.OS === "android" ? { paddingTop: insets.top + 14 } : null,
+          ]}
         >
-          <Text style={styles.inputLabel}>名称</Text>
-          <TextInput
-            value={name}
-            onChangeText={setName}
-            placeholder="例如：黄金三秒..."
-            placeholderTextColor={colors.muted}
-            style={styles.singleInput}
-          />
-          <Text style={styles.inputLabel}>内容</Text>
-          <TextInput
-            value={content}
-            onChangeText={setContent}
-            multiline
-            textAlignVertical="top"
-            placeholder="例如：开头 3 秒内必须让观众知道这条内容和自己有什么关系..."
-            placeholderTextColor={colors.muted}
-            style={styles.noteInput}
-          />
-          <TagEditor tags={tags} onChange={setTags} />
-        </ScrollView>
-        <View style={styles.modalFooter}>
-          <Pressable
-            disabled={!canSubmit}
-            style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
-            onPress={() =>
-              onSubmit(
-                name.trim(),
-                content.trim(),
-                tags,
-              )
+          <ModalHeader
+            description={tx("lawEditor.description")}
+            onClose={onClose}
+            title={
+              initialLaw ? tx("lawEditor.editTitle") : tx("lawEditor.createTitle")
             }
+          />
+          <View style={styles.modalContentFrame}>
+          <ScrollView
+            style={styles.modalScroll}
+            contentContainerStyle={[
+              styles.formStack,
+              { paddingBottom: scrollBottomPadding },
+            ]}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
           >
-            <Text style={styles.primaryButtonText}>
-              {initialLaw ? "保存修订" : "收录"}
-            </Text>
-          </Pressable>
-        </View>
-      </SafeAreaView>
+            <Text style={styles.inputLabel}>{tx("lawEditor.nameLabel")}</Text>
+            <TextInput
+              value={name}
+              onChangeText={setName}
+              placeholder={tx("lawEditor.namePlaceholder")}
+              placeholderTextColor={colors.muted}
+              style={styles.singleInput}
+            />
+            <Text style={styles.inputLabel}>{tx("lawEditor.contentLabel")}</Text>
+            <TextInput
+              value={content}
+              onChangeText={setContent}
+              multiline
+              textAlignVertical="top"
+              placeholder={tx("lawEditor.contentPlaceholder")}
+              placeholderTextColor={colors.muted}
+              style={styles.noteInput}
+            />
+            <TagEditor tags={tags} onChange={setTags} />
+          </ScrollView>
+          <View
+            pointerEvents="box-none"
+            style={[
+              styles.modalFloatingAction,
+              { bottom: floatingButtonBottom },
+            ]}
+          >
+            <Pressable
+              disabled={!canSubmit}
+              style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
+              onPress={() =>
+                onSubmit(
+                  name.trim(),
+                  content.trim(),
+                  tags,
+                )
+              }
+            >
+              <Text style={styles.primaryButtonText}>
+                {initialLaw
+                  ? tx("actions.saveRevision")
+                  : tx("actions.collectRule")}
+              </Text>
+            </Pressable>
+          </View>
+          </View>
+        </SafeAreaView>
+      </View>
     </Modal>
   );
 }
 
 function TagEditor({
-  label = "标签",
+  label,
   onChange,
   tags,
 }: {
@@ -1702,7 +3634,7 @@ function TagEditor({
 
   return (
     <View style={styles.quickLawTagSection}>
-      <Text style={styles.inputLabel}>{label}</Text>
+      <Text style={styles.inputLabel}>{label ?? tx("lawEditor.tagLabel")}</Text>
       <View style={styles.quickLawTagRow}>
         {tags.map((tag) => (
           <View key={tag} style={styles.quickLawTag}>
@@ -1735,19 +3667,23 @@ function TagEditor({
       >
         <View style={styles.centerModalOverlay}>
           <View style={styles.centerModalCard}>
-            <Text style={styles.centerModalTitle}>新增标签</Text>
+            <Text style={styles.centerModalTitle}>
+              {tx("lawEditor.addTagTitle")}
+            </Text>
             <TextInput
               autoFocus
               value={draft}
               onChangeText={setDraft}
-              placeholder="例如：语气"
+              placeholder={tx("lawEditor.tagPlaceholder")}
               placeholderTextColor={colors.muted}
               maxLength={quickLawTagMaxLength}
               style={styles.singleInput}
             />
             <View style={styles.centerModalActions}>
               <Pressable style={styles.outlineButton} onPress={close}>
-                <Text style={styles.outlineButtonText}>取消</Text>
+                <Text style={styles.outlineButtonText}>
+                  {tx("actions.cancel")}
+                </Text>
               </Pressable>
               <Pressable
                 disabled={!draft.trim()}
@@ -1757,7 +3693,9 @@ function TagEditor({
                 ]}
                 onPress={save}
               >
-                <Text style={styles.primaryButtonText}>保存</Text>
+                <Text style={styles.primaryButtonText}>
+                  {tx("actions.save")}
+                </Text>
               </Pressable>
             </View>
           </View>
@@ -1768,8 +3706,8 @@ function TagEditor({
 }
 
 function ConfirmDialog({
-  cancelLabel = "取消",
-  confirmLabel = "确认",
+  cancelLabel = tx("actions.cancel"),
+  confirmLabel = tx("actions.confirm"),
   onCancel,
   onConfirm,
   subtitle,
@@ -1814,21 +3752,167 @@ function ConfirmDialog({
   );
 }
 
+function TruncatedTextPreview({
+  moreLabel = tx("actions.more"),
+  numberOfLines,
+  onMorePress,
+  style,
+  text,
+}: {
+  moreLabel?: string;
+  numberOfLines: number;
+  onMorePress: () => void;
+  style: StyleProp<TextStyle>;
+  text: string;
+}) {
+  const [hasMore, setHasMore] = useState(false);
+  const [previewWidth, setPreviewWidth] = useState(0);
+  const measureTextRef = useRef<unknown>(null);
+  const flattenedTextStyle = StyleSheet.flatten(style) ?? {};
+  const lineHeight =
+    typeof flattenedTextStyle.lineHeight === "number"
+      ? flattenedTextStyle.lineHeight
+      : 22;
+  const collapsedMaxHeight = lineHeight * numberOfLines;
+  const webClipStyle =
+    Platform.OS === "web"
+      ? ({
+          maxHeight: collapsedMaxHeight,
+          overflow: "hidden",
+        } satisfies TextStyle)
+      : null;
+
+  useEffect(() => {
+    setHasMore(false);
+  }, [numberOfLines, text]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || previewWidth <= 0) return;
+
+    const timeout = setTimeout(() => {
+      const element = getDomElement(measureTextRef.current);
+      const measuredHeight =
+        typeof element?.scrollHeight === "number"
+          ? element.scrollHeight
+          : element?.getBoundingClientRect?.().height;
+
+      if (typeof measuredHeight === "number" && measuredHeight > 0) {
+        const nextHasMore = measuredHeight > collapsedMaxHeight + 1;
+
+        setHasMore((current) =>
+          current === nextHasMore ? current : nextHasMore,
+        );
+        return;
+      }
+
+      const fontSize =
+        typeof flattenedTextStyle.fontSize === "number"
+          ? flattenedTextStyle.fontSize
+          : 14;
+      const charsPerLine = Math.max(
+        6,
+        Math.floor(previewWidth / Math.max(1, fontSize)),
+      );
+      const nextHasMore =
+        Math.ceil(text.length / charsPerLine) > numberOfLines;
+
+      setHasMore((current) => (current === nextHasMore ? current : nextHasMore));
+    }, 0);
+
+    return () => clearTimeout(timeout);
+  }, [
+    collapsedMaxHeight,
+    flattenedTextStyle.fontSize,
+    numberOfLines,
+    previewWidth,
+    text,
+  ]);
+
+  function handleMeasureTextLayout(event: TextLayoutEvent) {
+    if (Platform.OS === "web") return;
+
+    const nextHasMore = event.nativeEvent.lines.length > numberOfLines;
+
+    setHasMore((current) => (current === nextHasMore ? current : nextHasMore));
+  }
+
+  return (
+    <View
+      style={styles.truncatedPreview}
+      onLayout={({ nativeEvent }) => {
+        setPreviewWidth(nativeEvent.layout.width);
+      }}
+    >
+      <Text
+        accessible={false}
+        ref={(node) => {
+          measureTextRef.current = node;
+        }}
+        onTextLayout={handleMeasureTextLayout}
+        style={[style, styles.truncatedMeasureText]}
+      >
+        {text}
+      </Text>
+      <Text
+        ellipsizeMode="tail"
+        numberOfLines={Platform.OS === "web" ? undefined : numberOfLines}
+        style={[
+          style,
+          styles.truncatedVisibleText,
+          hasMore && styles.truncatedVisibleTextWithMore,
+          webClipStyle,
+        ]}
+      >
+        {text}
+      </Text>
+      {hasMore ? (
+        <Pressable style={styles.inlineMoreButton} onPress={onMorePress}>
+          <Text style={styles.inlineMoreButtonText}>{moreLabel}</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function getDomElement(node: unknown):
+  | {
+      getBoundingClientRect?: () => { height: number };
+      scrollHeight?: number;
+    }
+  | null {
+  if (!node || typeof node !== "object") return null;
+
+  const maybeElement = node as {
+    getBoundingClientRect?: () => { height: number };
+    getNode?: () => unknown;
+    nodeType?: number;
+    scrollHeight?: number;
+    _node?: unknown;
+  };
+
+  if (maybeElement.nodeType === 1) return maybeElement;
+
+  return getDomElement(maybeElement._node ?? maybeElement.getNode?.());
+}
+
 function FragmentDetail({
   fragment,
   schemes,
   onAddDraft,
   onDelete,
-  onRename,
+  onOpenDraft,
+  onUpdateContent,
 }: {
   fragment: FragmentItem;
   schemes: Scheme[];
-  onAddDraft: (fragmentId: string, scheme: Scheme) => void;
+  onAddDraft: (fragmentId: string, scheme: Scheme, count?: Count | number) => void;
   onDelete: () => void;
-  onRename: (id: string, title: string) => void;
+  onOpenDraft: (draftId: string) => void;
+  onUpdateContent: (id: string, content: string) => void;
 }) {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const defaultScheme = schemes[0];
+  const [editOpen, setEditOpen] = useState(false);
+  const [generateOpen, setGenerateOpen] = useState(false);
   const sortedDrafts = [...fragment.drafts].sort(
     (a, b) =>
       new Date(latestDraftVersion(b)?.createdAt ?? 0).getTime() -
@@ -1836,81 +3920,1026 @@ function FragmentDetail({
   );
 
   return (
-    <SafeAreaView style={styles.stackSafeArea}>
-        <ScrollView
-          style={styles.detailScroll}
-          contentContainerStyle={styles.detailInner}
-          showsVerticalScrollIndicator={false}
-        >
-          <Text style={styles.paperSurface}>{fragment.content}</Text>
+    <StackScreenSurface>
+      <DetailScrollView>
+        <Text style={styles.paperSurface}>{fragment.content}</Text>
 
-          <View style={styles.actionRow}>
+        <View style={styles.actionRow}>
+          <Pressable
+            style={styles.outlineButton}
+            onPress={() => setEditOpen(true)}
+          >
+            <PencilLine color={colors.text} size={16} strokeWidth={2.3} />
+            <Text style={styles.outlineButtonText}>
+              {tx("actions.editContent")}
+            </Text>
+          </Pressable>
+          {schemes.length > 0 ? (
             <Pressable
-              style={styles.outlineButton}
-              onPress={() => onRename(fragment.id, `${fragment.title} `)}
+              style={styles.primaryButton}
+              onPress={() => setGenerateOpen(true)}
             >
-              <Text style={styles.outlineButtonText}>调整内容</Text>
+              <WandSparkles
+                color={colors.primaryText}
+                size={17}
+                strokeWidth={2.35}
+              />
+              <Text style={styles.primaryButtonText}>
+                {tx("actions.draft")}
+              </Text>
             </Pressable>
-            {defaultScheme ? (
-              <Pressable
-                style={styles.primaryButton}
-                onPress={() => onAddDraft(fragment.id, defaultScheme)}
-              >
-                <Text style={styles.primaryButtonText}>出稿</Text>
-              </Pressable>
-            ) : null}
-            <Pressable
-              style={styles.dangerButton}
-              onPress={() => setDeleteConfirmOpen(true)}
-            >
-              <Text style={styles.dangerButtonText}>删除</Text>
-            </Pressable>
+          ) : null}
+          <Pressable
+            style={styles.dangerButton}
+            onPress={() => setDeleteConfirmOpen(true)}
+          >
+            <Text style={styles.dangerButtonText}>{tx("actions.delete")}</Text>
+          </Pressable>
+        </View>
+
+        <Text style={styles.sectionTitle}>{tx("pages.drafts.sectionTitle")}</Text>
+
+        {sortedDrafts.length > 0 ? (
+          <View style={styles.listStack}>
+            {sortedDrafts.map((draft) => (
+              <DraftSummaryCard
+                key={draft.id}
+                draft={draft}
+                onOpen={onOpenDraft}
+              />
+            ))}
           </View>
-
-          <Text style={styles.sectionTitle}>成稿</Text>
-
-          {sortedDrafts.length > 0 ? (
-            <ResponsiveGrid
-              items={sortedDrafts}
-              minColumnWidth={220}
-              renderItem={(draft) => {
-                const latest = latestDraftVersion(draft);
-                return (
-                  <View style={styles.draftCard}>
-                    <View>
-                      <Text style={styles.gridCardTitle} numberOfLines={3}>
-                        {draft.schemeName}
-                      </Text>
-                      <Text style={styles.gridCardBody} numberOfLines={6}>
-                        {latest?.content ?? "这一稿还在酝酿中。"}
-                      </Text>
-                    </View>
-                    <View style={styles.gridCardFooter}>
-                      <Text style={styles.mutedText}>
-                        {draft.versions.length} 个稿次
-                      </Text>
-                    </View>
-                  </View>
-                );
-              }}
-            />
-          ) : (
-            <EmptyState
-              compact
-              title="还没有成稿"
-              description="可以从右上角选择出稿方案，让这条碎片先酝酿出第一版。"
-            />
-          )}
-        </ScrollView>
+        ) : (
+          <EmptyState
+            compact
+            title={tx("pages.drafts.emptyTitle")}
+            description={tx("pages.drafts.emptyDescription")}
+          />
+        )}
+      </DetailScrollView>
+      <FragmentContentEditor
+        fragment={fragment}
+        visible={editOpen}
+        onClose={() => setEditOpen(false)}
+        onSubmit={(content) => {
+          onUpdateContent(fragment.id, content);
+          setEditOpen(false);
+        }}
+      />
+      <DraftGenerateSheet
+        schemes={schemes}
+        visible={generateOpen}
+        onClose={() => setGenerateOpen(false)}
+        onSubmit={(selection) => {
+          schemes.forEach((scheme) => {
+            const item = selection[scheme.id];
+            if (item?.selected) {
+              onAddDraft(fragment.id, scheme, item.count);
+            }
+          });
+          setGenerateOpen(false);
+        }}
+      />
       <ConfirmDialog
-        confirmLabel="删除"
+        confirmLabel={tx("actions.delete")}
         onCancel={() => setDeleteConfirmOpen(false)}
         onConfirm={onDelete}
-        subtitle="这条碎片和它派生出的成稿都会被删除。"
-        title="删除碎片"
+        subtitle={tx("fragmentDetail.deleteSubtitle")}
+        title={tx("fragmentDetail.deleteTitle")}
         visible={deleteConfirmOpen}
       />
-    </SafeAreaView>
+    </StackScreenSurface>
+  );
+}
+
+function DraftSummaryCard({
+  draft,
+  onOpen,
+}: {
+  draft: Draft;
+  onOpen: (id: string) => void;
+}) {
+  const latest = latestDraftVersion(draft);
+
+  return (
+    <Pressable style={styles.gridCardShadow} onPress={() => onOpen(draft.id)}>
+      <View style={styles.gridCard}>
+        <View style={styles.gridCardContent}>
+          <Text style={styles.gridCardTitle} numberOfLines={2}>
+            {draft.schemeName}
+          </Text>
+          <Text style={styles.gridCardBody} numberOfLines={4}>
+            {summarize(latest?.content ?? tx("pages.drafts.pendingPreview"), 150)}
+          </Text>
+        </View>
+        <View style={styles.gridCardFooter}>
+          <Text style={styles.mutedText}>
+            {latest ? formatDate(latest.createdAt) : tx("common.processing")}
+          </Text>
+          <View style={styles.footerMeta}>
+            <Text style={styles.mutedText}>
+              {tx("common.draftCount", { count: draft.versions.length })}
+            </Text>
+            <ChevronRight color={colors.muted} size={16} strokeWidth={2.3} />
+          </View>
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+function DraftDetail({
+  draft,
+  laws,
+  onDeleteVersion,
+  onEditVersion,
+  onGenerate,
+  onRetryVersion,
+  onViewScheme,
+  scheme,
+}: {
+  draft: Draft;
+  laws: Law[];
+  onDeleteVersion: (versionId: string) => void;
+  onEditVersion: (content: string) => string | null;
+  onGenerate: () => void;
+  onRetryVersion: () => string | null;
+  onViewScheme: () => void;
+  scheme?: Scheme;
+}) {
+  const latest = latestDraftVersion(draft);
+  const carouselRef = useRef<ICarouselInstance>(null);
+  const [actionVersionId, setActionVersionId] = useState<string | null>(null);
+  const [deleteVersionConfirmOpen, setDeleteVersionConfirmOpen] =
+    useState(false);
+  const [editVersionOpen, setEditVersionOpen] = useState(false);
+  const [editVersionText, setEditVersionText] = useState("");
+  const [activeVersionId, setActiveVersionId] = useState(latest?.id ?? null);
+  const [jumpOpen, setJumpOpen] = useState(false);
+  const [jumpValue, setJumpValue] = useState("");
+  const [lawDetailId, setLawDetailId] = useState<string | null>(null);
+  const [schemeDetailOpen, setSchemeDetailOpen] = useState(false);
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
+  const [carouselFrame, setCarouselFrame] = useState({ height: 0, width: 0 });
+  const carouselReady = carouselFrame.width > 0 && carouselFrame.height > 0;
+  const carouselCardWidth = Math.max(260, carouselFrame.width - 24);
+  const detailPadding = useStackDetailPadding();
+
+  useEffect(() => {
+    setActiveVersionId(latest?.id ?? null);
+  }, [latest?.id]);
+
+  const activeVersion =
+    draft.versions.find((version) => version.id === activeVersionId) ?? latest;
+  const actionVersion =
+    draft.versions.find((version) => version.id === actionVersionId) ??
+    activeVersion;
+  const selectedLaw = laws.find((law) => law.id === lawDetailId);
+  const schemeDescription =
+    scheme?.description ?? tx("pages.drafts.schemeUnavailable");
+  const activeVersionIndex = activeVersion
+    ? draft.versions.findIndex((version) => version.id === activeVersion.id)
+    : -1;
+  const versionTotal = draft.versions.length;
+  const activeVersionPosition =
+    activeVersionIndex >= 0 ? activeVersionIndex + 1 : 0;
+  const previousVersion =
+    activeVersionIndex > 0 ? draft.versions[activeVersionIndex - 1] : null;
+  const nextVersion =
+    activeVersionIndex >= 0 && activeVersionIndex < versionTotal - 1
+      ? draft.versions[activeVersionIndex + 1]
+      : null;
+  const draftCardStackAnimation = useMemo(() => {
+    const moveSize = Math.max(1, carouselFrame.width);
+
+    return (value: number, index: number): ViewStyle => {
+      "worklet";
+
+      const futureDistance = Math.min(1, Math.max(0, value));
+      const stackDistance = Math.min(3, Math.max(0, -value));
+      const translateX =
+        value > 0 ? moveSize * futureDistance : -stackDistance * 10;
+      const scale = 1 - stackDistance * 0.035;
+
+      return {
+        opacity: 1,
+        transform: [{ translateX }, { scale }],
+        zIndex: 1000 + index,
+      };
+    };
+  }, [carouselFrame.width]);
+  const jumpTarget = Number.parseInt(jumpValue, 10);
+  const canJump =
+    Number.isInteger(jumpTarget) &&
+    jumpTarget >= 1 &&
+    jumpTarget <= versionTotal;
+
+  function openJumpDialog() {
+    setJumpValue(String(Math.max(activeVersionPosition, 1)));
+    setJumpOpen(true);
+  }
+
+  function jumpToVersion(position: number) {
+    const version = draft.versions[position - 1];
+
+    if (version) {
+      goToVersion(position - 1);
+    }
+  }
+
+  function confirmJump() {
+    if (!canJump) return;
+
+    jumpToVersion(jumpTarget);
+    setJumpOpen(false);
+  }
+
+  function openSnapshot(version: DraftVersion) {
+    setActionVersionId(version.id);
+    setSnapshotOpen(true);
+  }
+
+  function openVersionEditor(version: DraftVersion) {
+    setActionVersionId(version.id);
+    setEditVersionText(version.content);
+    setEditVersionOpen(true);
+  }
+
+  function saveVersionEdit() {
+    const nextContent = editVersionText.trim();
+
+    if (!nextContent) return;
+
+    const nextVersionId = onEditVersion(nextContent);
+    setEditVersionOpen(false);
+
+    if (nextVersionId) {
+      setActiveVersionId(nextVersionId);
+      setActionVersionId(nextVersionId);
+    }
+  }
+
+  function retryVersion() {
+    const nextVersionId = onRetryVersion();
+
+    if (nextVersionId) {
+      setActiveVersionId(nextVersionId);
+      setActionVersionId(nextVersionId);
+    }
+  }
+
+  function askDeleteVersion(version: DraftVersion) {
+    setActionVersionId(version.id);
+    setDeleteVersionConfirmOpen(true);
+  }
+
+  function confirmDeleteVersion() {
+    if (!actionVersion) return;
+
+    const removingIndex = draft.versions.findIndex(
+      (version) => version.id === actionVersion.id,
+    );
+    const fallbackVersion =
+      draft.versions[removingIndex - 1] ?? draft.versions[removingIndex + 1];
+
+    onDeleteVersion(actionVersion.id);
+    setDeleteVersionConfirmOpen(false);
+
+    if (fallbackVersion) {
+      setActiveVersionId(fallbackVersion.id);
+      setActionVersionId(fallbackVersion.id);
+    }
+  }
+
+  function goToVersion(index: number) {
+    const version = draft.versions[index];
+
+    if (!version) return;
+
+    setActiveVersionId(version.id);
+    carouselRef.current?.scrollTo({
+      animated: true,
+      index,
+    });
+  }
+
+  function handleCarouselSnap(index: number) {
+    const version = draft.versions[index];
+
+    if (version) {
+      setActiveVersionId(version.id);
+    }
+  }
+
+  function handleCarouselFrameLayout({
+    nativeEvent,
+  }: {
+    nativeEvent: { layout: { height: number; width: number } };
+  }) {
+    const nextFrame = {
+      height: Math.floor(nativeEvent.layout.height),
+      width: Math.floor(nativeEvent.layout.width),
+    };
+
+    setCarouselFrame((current) =>
+      current.height === nextFrame.height && current.width === nextFrame.width
+        ? current
+        : nextFrame,
+    );
+  }
+
+  return (
+    <StackScreenSurface>
+      <View style={[styles.draftDetailInner, detailPadding]}>
+        <View style={styles.draftSchemeCard}>
+          <Text style={styles.draftSchemePreviewText} numberOfLines={3}>
+            {scheme?.description ?? tx("pages.drafts.schemeUnavailable")}
+          </Text>
+          {laws.length > 0 ? (
+            <View style={styles.draftLawPillRow}>
+              {laws.map((law) => (
+                <Text key={law.id} style={styles.tag} numberOfLines={1}>
+                  {law.name}
+                </Text>
+              ))}
+            </View>
+          ) : (
+            <Text style={styles.mutedText}>{tx("pages.drafts.noLaws")}</Text>
+          )}
+          {scheme ? (
+            <View style={styles.draftSchemeActions}>
+              <Pressable style={styles.outlineButton} onPress={onViewScheme}>
+                <Text style={styles.outlineButtonText}>{tx("actions.view")}</Text>
+              </Pressable>
+              <Pressable style={styles.primaryButton} onPress={onGenerate}>
+                <WandSparkles
+                  color={colors.primaryText}
+                  size={17}
+                  strokeWidth={2.35}
+                />
+                <Text style={styles.primaryButtonText}>
+                  {tx("actions.draft")}
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.draftContentHeader}>
+          <Text style={styles.sectionTitle}>{tx("pages.drafts.contentTitle")}</Text>
+          <View style={styles.versionStepper}>
+            <Pressable
+              disabled={!previousVersion}
+              style={[
+                styles.versionStepperButton,
+                !previousVersion && styles.versionStepperButtonDisabled,
+              ]}
+              onPress={() =>
+                previousVersion && goToVersion(activeVersionIndex - 1)
+              }
+            >
+              <ChevronLeft
+                color={previousVersion ? colors.text : colors.muted}
+                size={17}
+                strokeWidth={2.35}
+              />
+            </Pressable>
+            <Pressable
+              style={styles.versionNumberButton}
+              onPress={openJumpDialog}
+            >
+              <Text style={styles.versionNumberText}>
+                {activeVersionPosition || 1}
+              </Text>
+            </Pressable>
+            <Text style={styles.versionTotalText}>/ {versionTotal}</Text>
+            <Pressable
+              disabled={!nextVersion}
+              style={[
+                styles.versionStepperButton,
+                !nextVersion && styles.versionStepperButtonDisabled,
+              ]}
+              onPress={() => nextVersion && goToVersion(activeVersionIndex + 1)}
+            >
+              <ChevronRight
+                color={nextVersion ? colors.text : colors.muted}
+                size={17}
+                strokeWidth={2.35}
+              />
+            </Pressable>
+          </View>
+        </View>
+
+        <View
+          style={styles.draftContentCarouselFrame}
+          onLayout={handleCarouselFrameLayout}
+        >
+          {carouselReady ? (
+            <Carousel
+              ref={carouselRef}
+              autoFillData={false}
+              customConfig={() => ({
+                type: "positive",
+                viewCount: versionTotal,
+              })}
+              customAnimation={draftCardStackAnimation}
+              data={draft.versions}
+              defaultIndex={Math.max(activeVersionIndex, 0)}
+              enabled={versionTotal > 1}
+              itemHeight={carouselFrame.height}
+              itemWidth={carouselFrame.width}
+              loop={false}
+              onSnapToItem={handleCarouselSnap}
+              pagingEnabled
+              snapEnabled
+              windowSize={versionTotal}
+              style={[
+                styles.draftContentCarousel,
+                { height: carouselFrame.height, width: carouselFrame.width },
+              ]}
+              renderItem={({ item }) => (
+                <View
+                  style={[
+                    styles.draftCarouselItem,
+                    { height: carouselFrame.height, width: carouselFrame.width },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.draftContentCard,
+                      styles.draftContentCardFill,
+                      { width: carouselCardWidth },
+                    ]}
+                  >
+                    <View style={styles.draftVersionTopRow}>
+                      <View style={styles.draftVersionMeta}>
+                        <Text style={styles.softBadge}>
+                          {draftStatusText(item.status)}
+                        </Text>
+                        <Text style={styles.mutedText}>
+                          {formatDate(item.createdAt)}
+                        </Text>
+                      </View>
+                      <View style={styles.draftVersionActions}>
+                        <Pressable
+                          accessibilityLabel={tx("pages.drafts.snapshotA11y")}
+                          style={styles.draftVersionActionButton}
+                          onPress={() => openSnapshot(item)}
+                        >
+                          <Eye color={colors.text} size={14} strokeWidth={2.35} />
+                        </Pressable>
+                        <Pressable
+                          accessibilityLabel={tx("pages.drafts.editA11y")}
+                          style={styles.draftVersionActionButton}
+                          onPress={() => openVersionEditor(item)}
+                        >
+                          <PencilLine
+                            color={colors.text}
+                            size={14}
+                            strokeWidth={2.35}
+                          />
+                        </Pressable>
+                        <Pressable
+                          accessibilityLabel={tx("pages.drafts.retryA11y")}
+                          style={styles.draftVersionActionButton}
+                          onPress={retryVersion}
+                        >
+                          <RotateCcw
+                            color={colors.text}
+                            size={14}
+                            strokeWidth={2.35}
+                          />
+                        </Pressable>
+                        <Pressable
+                          accessibilityLabel={tx("pages.drafts.deleteA11y")}
+                          style={styles.draftVersionDeleteButton}
+                          onPress={() => askDeleteVersion(item)}
+                        >
+                          <Trash2
+                            color={colors.danger}
+                            size={15}
+                            strokeWidth={2.35}
+                          />
+                        </Pressable>
+                      </View>
+                    </View>
+                    <ScrollView
+                      style={styles.draftContentScroll}
+                      contentContainerStyle={styles.draftContentScrollInner}
+                      showsVerticalScrollIndicator={false}
+                    >
+                      <Text style={styles.draftContentText}>
+                        {item.content || tx("pages.drafts.pendingPreview")}
+                      </Text>
+                    </ScrollView>
+                  </View>
+                </View>
+              )}
+            />
+          ) : null}
+        </View>
+      </View>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setJumpOpen(false)}
+        transparent
+        visible={jumpOpen}
+      >
+        <View style={styles.centerModalOverlay}>
+          <View style={styles.centerModalCard}>
+            <Text style={styles.centerModalTitle}>
+              {tx("pages.drafts.jumpTitle")}
+            </Text>
+            <View style={styles.jumpInputRow}>
+              <TextInput
+                autoFocus
+                keyboardType="number-pad"
+                maxLength={String(Math.max(versionTotal, 1)).length}
+                onChangeText={(value) => setJumpValue(value.replace(/\D/g, ""))}
+                onSubmitEditing={confirmJump}
+                placeholder="1"
+                placeholderTextColor={colors.muted}
+                style={styles.jumpInput}
+                value={jumpValue}
+              />
+              <Text style={styles.jumpTotalText}>/ {versionTotal}</Text>
+            </View>
+            <View style={styles.centerModalActions}>
+              <Pressable
+                style={styles.outlineButton}
+                onPress={() => setJumpOpen(false)}
+              >
+                <Text style={styles.outlineButtonText}>
+                  {tx("actions.cancel")}
+                </Text>
+              </Pressable>
+              <Pressable
+                disabled={!canJump}
+                style={[
+                  styles.primaryButton,
+                  !canJump && styles.buttonDisabled,
+                ]}
+                onPress={confirmJump}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {tx("actions.jump")}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setSnapshotOpen(false)}
+        transparent
+        visible={snapshotOpen}
+      >
+        <View style={styles.centerModalOverlay}>
+          <View style={[styles.centerModalCard, styles.versionModalCard]}>
+            <Text style={styles.centerModalTitle}>
+              {tx("pages.drafts.sourceTitle")}
+            </Text>
+            <ScrollView
+              style={styles.versionModalScroll}
+              contentContainerStyle={styles.versionModalScrollInner}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.versionModalSection}>
+                <Text style={styles.versionModalLabel}>
+                  {tx("pages.drafts.schemeTitle")}
+                </Text>
+                <TruncatedTextPreview
+                  numberOfLines={3}
+                  onMorePress={() => setSchemeDetailOpen(true)}
+                  style={styles.versionModalText}
+                  text={schemeDescription}
+                />
+              </View>
+              <View style={styles.versionModalSection}>
+                <Text style={styles.versionModalLabel}>
+                  {tx("pages.drafts.lawsTitle")}
+                </Text>
+                {laws.length > 0 ? (
+                  <View style={styles.draftLawPillRow}>
+                    {laws.map((law) => (
+                      <Pressable
+                        key={law.id}
+                        style={styles.lawPillButton}
+                        onPress={() => setLawDetailId(law.id)}
+                      >
+                        <Text style={styles.lawPillButtonText} numberOfLines={1}>
+                          {law.name}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={styles.versionModalText}>
+                    {tx("pages.drafts.noLaws")}
+                  </Text>
+                )}
+              </View>
+            </ScrollView>
+            <View style={styles.centerModalActions}>
+              <Pressable
+                style={styles.primaryButton}
+                onPress={() => setSnapshotOpen(false)}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {tx("actions.gotIt")}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setSchemeDetailOpen(false)}
+        transparent
+        visible={schemeDetailOpen}
+      >
+        <View style={styles.centerModalOverlay}>
+          <View style={[styles.centerModalCard, styles.versionModalCard]}>
+            <Text style={styles.centerModalTitle}>
+              {tx("pages.drafts.schemeTitle")}
+            </Text>
+            <ScrollView
+              style={styles.versionModalScroll}
+              contentContainerStyle={styles.versionModalScrollInner}
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.versionModalText}>{schemeDescription}</Text>
+            </ScrollView>
+            <View style={styles.centerModalActions}>
+              <Pressable
+                style={styles.primaryButton}
+                onPress={() => setSchemeDetailOpen(false)}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {tx("actions.gotIt")}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setLawDetailId(null)}
+        transparent
+        visible={Boolean(selectedLaw)}
+      >
+        <View style={styles.centerModalOverlay}>
+          <View style={[styles.centerModalCard, styles.versionModalCard]}>
+            <Text style={styles.centerModalTitle}>
+              {selectedLaw?.name ?? tx("pages.drafts.lawsTitle")}
+            </Text>
+            <ScrollView
+              style={styles.versionModalScroll}
+              contentContainerStyle={styles.versionModalScrollInner}
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.versionModalText}>
+                {selectedLaw?.content ?? tx("pages.drafts.lawUnavailable")}
+              </Text>
+              {selectedLaw?.tags.length ? (
+                <View style={styles.draftLawPillRow}>
+                  {selectedLaw.tags.map((tag, index) => (
+                    <Text
+                      key={`${tag}-${index}`}
+                      style={styles.tag}
+                      numberOfLines={1}
+                    >
+                      {tag}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
+            </ScrollView>
+            <View style={styles.centerModalActions}>
+              <Pressable
+                style={styles.primaryButton}
+                onPress={() => setLawDetailId(null)}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {tx("actions.gotIt")}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setEditVersionOpen(false)}
+        transparent
+        visible={editVersionOpen}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          style={styles.centerModalOverlay}
+        >
+          <View style={[styles.centerModalCard, styles.versionEditorCard]}>
+            <Text style={styles.centerModalTitle}>
+              {tx("pages.drafts.editTitle")}
+            </Text>
+            <TextInput
+              multiline
+              onChangeText={setEditVersionText}
+              placeholder={tx("pages.drafts.editPlaceholder")}
+              placeholderTextColor={colors.muted}
+              style={styles.versionEditorInput}
+              textAlignVertical="top"
+              value={editVersionText}
+            />
+            <View style={styles.centerModalActions}>
+              <Pressable
+                style={styles.outlineButton}
+                onPress={() => setEditVersionOpen(false)}
+              >
+                <Text style={styles.outlineButtonText}>
+                  {tx("actions.cancel")}
+                </Text>
+              </Pressable>
+              <Pressable
+                disabled={!editVersionText.trim()}
+                style={[
+                  styles.primaryButton,
+                  !editVersionText.trim() && styles.buttonDisabled,
+                ]}
+                onPress={saveVersionEdit}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {tx("actions.save")}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+      <ConfirmDialog
+        confirmLabel={tx("actions.delete")}
+        onCancel={() => setDeleteVersionConfirmOpen(false)}
+        onConfirm={confirmDeleteVersion}
+        subtitle={tx("pages.drafts.deleteSubtitle")}
+        title={tx("pages.drafts.deleteTitle")}
+        visible={deleteVersionConfirmOpen}
+      />
+    </StackScreenSurface>
+  );
+}
+
+function FragmentContentEditor({
+  fragment,
+  visible,
+  onClose,
+  onSubmit,
+}: {
+  fragment: FragmentItem;
+  visible: boolean;
+  onClose: () => void;
+  onSubmit: (content: string) => void;
+}) {
+  const [content, setContent] = useState(fragment.content);
+  const canSubmit = content.trim().length > 0;
+
+  useEffect(() => {
+    if (!visible) return;
+
+    setContent(fragment.content);
+  }, [visible, fragment.id, fragment.content]);
+
+  return (
+    <Modal
+      {...androidSystemBarModalProps}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      visible={visible}
+      onRequestClose={onClose}
+    >
+      <KeyboardAvoidingView
+        behavior={Platform.select({ ios: "padding", default: undefined })}
+        style={styles.modalShell}
+      >
+        <ModalSurface>
+          <ModalHeader
+            description={tx("fragmentDetail.editDescription")}
+            onClose={onClose}
+            title={tx("fragmentDetail.editTitle")}
+          />
+          <View style={styles.draftEditBody}>
+            <TextInput
+              value={content}
+              onChangeText={setContent}
+              multiline
+              textAlignVertical="top"
+              placeholder={tx("fragmentDetail.editPlaceholder")}
+              placeholderTextColor={colors.muted}
+              style={styles.composeInput}
+            />
+          </View>
+          <View style={styles.modalFooter}>
+            <Pressable
+              disabled={!canSubmit}
+              style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
+              onPress={() => onSubmit(content.trim())}
+            >
+              <Text style={styles.primaryButtonText}>
+                {tx("actions.confirm")}
+              </Text>
+            </Pressable>
+          </View>
+        </ModalSurface>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+function DraftGenerateSheet({
+  schemes,
+  visible,
+  onClose,
+  onSubmit,
+}: {
+  schemes: Scheme[];
+  visible: boolean;
+  onClose: () => void;
+  onSubmit: (selection: SchemeSelection) => void;
+}) {
+  const [selection, setSelection] = useState<SchemeSelection>(() =>
+    createDefaultSchemeSelection(schemes),
+  );
+  const canSubmit = Object.values(selection).some((item) => item.selected);
+
+  useEffect(() => {
+    if (!visible) return;
+
+    setSelection(createDefaultSchemeSelection(schemes));
+  }, [visible, schemes]);
+
+  function setCount(schemeId: string, count: Count) {
+    setSelection((current) => ({
+      ...current,
+      [schemeId]: {
+        selected: true,
+        count,
+      },
+    }));
+  }
+
+  function toggleScheme(schemeId: string) {
+    setSelection((current) => {
+      const item = current[schemeId] ?? { selected: false, count: 1 as Count };
+      return {
+        ...current,
+        [schemeId]: {
+          ...item,
+          selected: !item.selected,
+        },
+      };
+    });
+  }
+
+  return (
+    <Modal
+      {...androidSystemBarModalProps}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      visible={visible}
+      onRequestClose={onClose}
+    >
+      <ModalSurface>
+        <ModalHeader
+          description={tx("fragmentDetail.generateDescription")}
+          onClose={onClose}
+          title={tx("fragmentDetail.generateTitle")}
+        />
+        <View style={styles.draftGenerateBody}>
+          <DraftSchemeSelectionList
+            schemes={schemes}
+            selection={selection}
+            onCountChange={setCount}
+            onToggle={toggleScheme}
+          />
+        </View>
+        <View style={styles.modalFooter}>
+          <Pressable
+            disabled={!canSubmit}
+            style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
+            onPress={() => onSubmit(selection)}
+          >
+            <WandSparkles color={colors.primaryText} size={17} strokeWidth={2.35} />
+            <Text style={styles.primaryButtonText}>{tx("actions.draft")}</Text>
+          </Pressable>
+        </View>
+      </ModalSurface>
+    </Modal>
+  );
+}
+
+function DraftSchemeSelectionList({
+  schemes,
+  selection,
+  onCountChange,
+  onToggle,
+}: {
+  schemes: Scheme[];
+  selection: SchemeSelection;
+  onCountChange: (schemeId: string, count: Count) => void;
+  onToggle: (schemeId: string) => void;
+}) {
+  return (
+    <View style={styles.draftSchemeSelectionBlock}>
+      <Text style={styles.helpText}>
+        {tx("fragmentDetail.generateHelp")}
+      </Text>
+      {schemes.length > 0 ? (
+        <ScrollView
+          style={styles.draftSchemeListScroll}
+          contentContainerStyle={styles.draftSchemeList}
+          showsVerticalScrollIndicator={false}
+        >
+          {schemes.map((scheme) => {
+            const item = selection[scheme.id] ?? {
+              selected: false,
+              count: 1 as Count,
+            };
+
+            return (
+              <View
+                key={scheme.id}
+                style={styles.draftSchemeListCard}
+              >
+                <View
+                  style={[
+                    styles.selectionBorderOverlay,
+                    item.selected && styles.selectionBorderOverlaySelected,
+                  ]}
+                />
+                <Pressable
+                  style={styles.draftSchemeListTop}
+                  onPress={() => onToggle(scheme.id)}
+                >
+                  <View style={styles.draftSchemeListHeader}>
+                    <View
+                      style={[
+                        styles.checkCircle,
+                        item.selected && styles.checkCircleSelected,
+                      ]}
+                    >
+                      <Text style={styles.checkText}>
+                        {item.selected ? "✓" : ""}
+                      </Text>
+                    </View>
+                    <Text style={styles.schemeTileTitle} numberOfLines={2}>
+                      {scheme.name}
+                    </Text>
+                  </View>
+                  <Text style={styles.schemeTileBody} numberOfLines={3}>
+                    {summarize(scheme.description, 120)}
+                  </Text>
+                </Pressable>
+                <View style={styles.schemeTileFooter}>
+                  <Text style={styles.mutedText}>
+                    {tx("common.countLabel")}
+                  </Text>
+                  <View style={styles.countRow}>
+                    {[1, 2, 3].map((count) => (
+                      <Pressable
+                        key={count}
+                        style={[
+                          styles.countButton,
+                          item.count === count && styles.countButtonActive,
+                        ]}
+                        onPress={() => onCountChange(scheme.id, count as Count)}
+                      >
+                        <Text
+                          style={[
+                            styles.countButtonText,
+                            item.count === count &&
+                              styles.countButtonTextActive,
+                          ]}
+                        >
+                          {count}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              </View>
+            );
+          })}
+        </ScrollView>
+      ) : (
+        <EmptyState
+          compact
+          title={tx("compose.noSchemesTitle")}
+          description={tx("fragmentDetail.noSchemesDescription")}
+        />
+      )}
+    </View>
   );
 }
 
@@ -1936,14 +4965,14 @@ function SchemeDetail({
   );
 
   return (
-    <SafeAreaView style={styles.stackSafeArea}>
+    <SafeAreaView edges={["right", "bottom", "left"]} style={styles.stackSafeArea}>
         <ScrollView
           style={styles.detailScroll}
           contentContainerStyle={styles.detailInner}
           showsVerticalScrollIndicator={false}
         >
           <Text style={styles.paperSurface}>{scheme.description}</Text>
-          <Text style={styles.sectionTitle}>创作法则</Text>
+          <Text style={styles.sectionTitle}>{tx("schemeEditor.lawsLabel")}</Text>
           {boundLaws.length > 0 ? (
             boundLaws.map((law) => (
               <View key={law.id} style={styles.lawDetailCard}>
@@ -1954,11 +4983,13 @@ function SchemeDetail({
           ) : (
             <EmptyState
               compact
-              title="还没有绑定创作法则"
-              description="编辑方案时可以从创作法典里选择法则。"
+              title={tx("pages.schemes.noBoundLawsTitle")}
+              description={tx("pages.schemes.noBoundLawsDescription")}
             />
           )}
-          <Text style={styles.sectionTitle}>此间拾遗</Text>
+          <Text style={styles.sectionTitle}>
+            {tx("pages.schemes.relatedFragmentsTitle")}
+          </Text>
           {relatedFragments.length > 0 ? (
             <FragmentMasonry
               fragments={relatedFragments}
@@ -1967,8 +4998,8 @@ function SchemeDetail({
           ) : (
             <EmptyState
               compact
-              title="还没有碎片"
-              description="当碎片经由这个方案成稿后，会出现在这里。"
+              title={tx("pages.schemes.noRelatedFragmentsTitle")}
+              description={tx("pages.schemes.noRelatedFragmentsDescription")}
             />
           )}
         </ScrollView>
@@ -1977,18 +5008,20 @@ function SchemeDetail({
             style={styles.dangerButton}
             onPress={() => setDeleteConfirmOpen(true)}
           >
-            <Text style={styles.dangerButtonText}>删除</Text>
+            <Text style={styles.dangerButtonText}>{tx("actions.delete")}</Text>
           </Pressable>
           <Pressable style={styles.primaryButton} onPress={onEdit}>
-            <Text style={styles.primaryButtonText}>编辑方案</Text>
+            <Text style={styles.primaryButtonText}>
+              {tx("actions.editScheme")}
+            </Text>
           </Pressable>
         </View>
       <ConfirmDialog
-        confirmLabel="删除"
+        confirmLabel={tx("actions.delete")}
         onCancel={() => setDeleteConfirmOpen(false)}
         onConfirm={onDelete}
-        subtitle={`「${scheme.name}」会从方案簿中移除。`}
-        title="删除出稿方案"
+        subtitle={tx("pages.schemes.deleteSubtitle", { name: scheme.name })}
+        title={tx("pages.schemes.deleteTitle")}
         visible={deleteConfirmOpen}
       />
     </SafeAreaView>
@@ -2007,7 +5040,7 @@ function LawDetail({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   return (
-    <SafeAreaView style={styles.stackSafeArea}>
+    <SafeAreaView edges={["right", "bottom", "left"]} style={styles.stackSafeArea}>
         <ScrollView
           style={styles.detailScroll}
           contentContainerStyle={styles.detailInner}
@@ -2027,18 +5060,18 @@ function LawDetail({
             style={styles.dangerButton}
             onPress={() => setDeleteConfirmOpen(true)}
           >
-            <Text style={styles.dangerButtonText}>删除</Text>
+            <Text style={styles.dangerButtonText}>{tx("actions.delete")}</Text>
           </Pressable>
           <Pressable style={styles.primaryButton} onPress={onEdit}>
-            <Text style={styles.primaryButtonText}>修订</Text>
+            <Text style={styles.primaryButtonText}>{tx("actions.revise")}</Text>
           </Pressable>
         </View>
       <ConfirmDialog
-        confirmLabel="删除"
+        confirmLabel={tx("actions.delete")}
         onCancel={() => setDeleteConfirmOpen(false)}
         onConfirm={onDelete}
-        subtitle={`「${law.name}」会从创作法典中移除。`}
-        title="删除创作法则"
+        subtitle={tx("pages.laws.deleteSubtitle", { name: law.name })}
+        title={tx("pages.laws.deleteTitle")}
         visible={deleteConfirmOpen}
       />
     </SafeAreaView>
@@ -2047,12 +5080,12 @@ function LawDetail({
 
 function MissingStackScreen({ title }: { title: string }) {
   return (
-    <SafeAreaView style={styles.stackSafeArea}>
+    <StackScreenSurface>
       <EmptyState
         title={title}
-        description="这条内容可能已经被删除，或者当前预览数据还没有同步过来。"
+        description={tx("common.missingContent")}
       />
-    </SafeAreaView>
+    </StackScreenSurface>
   );
 }
 
@@ -2072,7 +5105,7 @@ function ModalHeader({
         <Text style={styles.modalDescription}>{description}</Text>
       </View>
       <Pressable style={styles.closeButton} onPress={onClose}>
-        <Text style={styles.closeButtonText}>关闭</Text>
+        <Text style={styles.closeButtonText}>{tx("actions.close")}</Text>
       </Pressable>
     </View>
   );
@@ -2131,35 +5164,6 @@ function estimateFragmentPreviewHeight(
   return Math.round(Math.min(maxHeight, Math.max(minHeight, naturalHeight)));
 }
 
-function createFragmentSeed({
-  id,
-  title,
-  content,
-  createdAt,
-  draftSchemes,
-}: {
-  id: string;
-  title: string;
-  content: string;
-  createdAt: string;
-  draftSchemes: Scheme[];
-}): FragmentItem {
-  return {
-    id,
-    title,
-    content,
-    createdAt,
-    updatedAt: createdAt,
-    drafts: draftSchemes.map((scheme, index) =>
-      createDraft({
-        scheme,
-        fragmentContent: content,
-        count: index === 0 ? 2 : 1,
-      }),
-    ),
-  };
-}
-
 function createDraft({
   scheme,
   fragmentContent,
@@ -2201,13 +5205,35 @@ function createDraftVersion({
   };
 }
 
+function createDraftVersionFromContent({
+  content,
+  versionNo,
+}: {
+  content: string;
+  versionNo: number;
+}): DraftVersion {
+  return {
+    id: createId("version"),
+    versionNo,
+    status: "completed",
+    createdAt: new Date().toISOString(),
+    content,
+  };
+}
+
 function latestDraftVersion(draft: Draft) {
   return draft.versions.at(-1);
 }
 
+function draftStatusText(status?: DraftVersion["status"]) {
+  if (status === "brewing") return tx("status.brewing");
+  if (status === "failed") return tx("status.failed");
+  return tx("status.completed");
+}
+
 function createFragmentTitle(content: string) {
   const firstLine = content.replace(/\s+/g, " ").trim();
-  if (!firstLine) return "新碎片";
+  if (!firstLine) return tx("compose.createTitleFallback");
   return firstLine.length > 18 ? `${firstLine.slice(0, 18)}...` : firstLine;
 }
 
@@ -2224,12 +5250,42 @@ function summarize(value: string, maxLength: number) {
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+  const date = dayjs(value);
+
+  if (!date.isValid()) return value;
+
+  const now = dayjs();
+  const localizedDate = date.locale(activeDayjsLocale);
+
+  if (date.isAfter(now)) {
+    return localizedDate.fromNow();
+  }
+
+  const calendarDayDistance = now.startOf("day").diff(date.startOf("day"), "day");
+
+  if (calendarDayDistance === 0) {
+    return localizedDate.fromNow();
+  }
+
+  if (calendarDayDistance === 1) {
+    return localizedDate.calendar(now, {
+      lastDay: activeI18nLanguage === "en" ? "[Yesterday]" : "[昨天]",
+    });
+  }
+
+  if (calendarDayDistance < 7) {
+    return localizedDate.fromNow();
+  }
+
+  return localizedDate.format(
+    date.year() === now.year()
+      ? activeI18nLanguage === "en"
+        ? "MMM D"
+        : "M月D日"
+      : activeI18nLanguage === "en"
+        ? "MMM D, YYYY"
+        : "YYYY年M月D日",
+  );
 }
 
 function hoursAgo(hours: number) {
@@ -2240,31 +5296,514 @@ function daysAgo(days: number) {
   return hoursAgo(days * 24);
 }
 
-const colors = {
-  background: "#f8f1e6",
-  card: "#fffdf8",
-  muted: "#7f7164",
-  mutedSurface: "#efe6d7",
-  border: "#dfcfba",
-  text: "#302117",
-  primary: "#3f2415",
-  primaryText: "#fff9ef",
-  secondary: "#efe2ce",
-  danger: "#b54a35",
-  dangerSoft: "#f4ded7",
+const themeOptions: AppTheme[] = [
+  {
+    id: "parchment",
+    name: "羊皮纸",
+    description: "温暖、轻柔，适合日常记录。",
+    tone: "暖黄",
+    colors: {
+      background: "#fbf3e8",
+      card: "#fffdf8",
+      cardBorder: "#e7d5bd",
+      muted: "#7f7164",
+      mutedBorder: "rgba(127, 113, 100, 0.5)",
+      mutedSurface: "#f4eadc",
+      border: "#e4d2bb",
+      text: "#302117",
+      primary: "#3f2415",
+      primaryText: "#fff9ef",
+      overlay: "rgba(48, 33, 23, 0.24)",
+      secondary: "#f0e3d0",
+      danger: "#b54a35",
+      dangerSoft: "#f4ded7",
+    },
+  },
+  {
+    id: "sage",
+    name: "青枝",
+    description: "更安静的绿色调，适合长时间记录。",
+    tone: "绿色",
+    colors: {
+      background: "#f3f7ed",
+      card: "#fcfff8",
+      cardBorder: "#cbdcbd",
+      muted: "#62705d",
+      mutedBorder: "rgba(98, 112, 93, 0.5)",
+      mutedSurface: "#e7efdd",
+      border: "#d2dfc5",
+      text: "#1f2d1c",
+      primary: "#2d4a26",
+      primaryText: "#f9fff4",
+      overlay: "rgba(31, 45, 28, 0.25)",
+      secondary: "#deebd3",
+      danger: "#ad4d3d",
+      dangerSoft: "#f4ded7",
+    },
+  },
+  {
+    id: "rose",
+    name: "蔷薇",
+    description: "偏红但不艳，适合更柔软的心情。",
+    tone: "红色",
+    colors: {
+      background: "#fff1ee",
+      card: "#fffaf8",
+      cardBorder: "#eac7bf",
+      muted: "#7c615d",
+      mutedBorder: "rgba(124, 97, 93, 0.5)",
+      mutedSurface: "#f7e0db",
+      border: "#e8cbc4",
+      text: "#321b17",
+      primary: "#6b302b",
+      primaryText: "#fff8f5",
+      overlay: "rgba(50, 27, 23, 0.25)",
+      secondary: "#f1d6cf",
+      danger: "#b54a35",
+      dangerSoft: "#f4ded7",
+    },
+  },
+  {
+    id: "sky",
+    name: "晴蓝",
+    description: "清爽、克制，适合把内容看清楚。",
+    tone: "蓝色",
+    colors: {
+      background: "#eef6f8",
+      card: "#fbfeff",
+      cardBorder: "#bfd4df",
+      muted: "#5d6f78",
+      mutedBorder: "rgba(93, 111, 120, 0.5)",
+      mutedSurface: "#e0edf2",
+      border: "#cadce4",
+      text: "#172a34",
+      primary: "#21485a",
+      primaryText: "#f6fcff",
+      overlay: "rgba(23, 42, 52, 0.25)",
+      secondary: "#d6e8ef",
+      danger: "#ad4d3d",
+      dangerSoft: "#f4ded7",
+    },
+  },
+  {
+    id: "mint",
+    name: "薄荷",
+    description: "更清新的浅色调，留白感更强。",
+    tone: "清新",
+    colors: {
+      background: "#eff9f3",
+      card: "#fbfffc",
+      cardBorder: "#bfddca",
+      muted: "#5e7066",
+      mutedBorder: "rgba(94, 112, 102, 0.5)",
+      mutedSurface: "#dff0e6",
+      border: "#c8dfd1",
+      text: "#1b2d24",
+      primary: "#27523f",
+      primaryText: "#f7fff9",
+      overlay: "rgba(27, 45, 36, 0.25)",
+      secondary: "#d4eadc",
+      danger: "#ad4d3d",
+      dangerSoft: "#f4ded7",
+    },
+  },
+  {
+    id: "dark",
+    name: "夜色",
+    description: "暗黑模式，适合夜里低亮度使用。",
+    tone: "Dark",
+    isDark: true,
+    colors: {
+      background: "#17120e",
+      card: "#211a14",
+      cardBorder: "#4d3b2b",
+      muted: "#c5ad94",
+      mutedBorder: "rgba(197, 173, 148, 0.45)",
+      mutedSurface: "#2d241b",
+      border: "#4a3929",
+      text: "#f8ead8",
+      primary: "#e3bd8c",
+      primaryText: "#24170e",
+      overlay: "rgba(8, 5, 3, 0.58)",
+      secondary: "#382b20",
+      danger: "#f09a84",
+      dangerSoft: "#44231d",
+    },
+  },
+];
+
+const themesById = Object.fromEntries(
+  themeOptions.map((theme) => [theme.id, theme]),
+) as Record<ThemeId, AppTheme>;
+
+const themedStyleCache = new Map<ThemeId, ReturnType<typeof createThemedStyles>>();
+
+let colors: ThemeColors = themesById.parchment.colors;
+let styles = getThemedStyles(themesById.parchment);
+
+function getTheme(themeId: ThemeId) {
+  return themesById[themeId] ?? themesById.parchment;
+}
+
+function isThemeId(value: unknown): value is ThemeId {
+  return typeof value === "string" && value in themesById;
+}
+
+function isLanguageId(value: unknown): value is LanguageId {
+  return languageOptions.some((language) => language.id === value);
+}
+
+function applyTheme(themeId: ThemeId) {
+  const theme = getTheme(themeId);
+  colors = theme.colors;
+  styles = getThemedStyles(theme);
+}
+
+function getThemedStyles(theme: AppTheme) {
+  const cached = themedStyleCache.get(theme.id);
+  if (cached) return cached;
+
+  const nextStyles = createThemedStyles(theme.colors);
+  themedStyleCache.set(theme.id, nextStyles);
+  return nextStyles;
+}
+
+function getLanguageOption(languageId: LanguageId) {
+  return (
+    languageOptions.find((language) => language.id === languageId) ??
+    languageOptions[0]
+  );
+}
+
+function getLanguageName(languageId: LanguageId) {
+  const language = getLanguageOption(languageId);
+
+  return language.nativeName ?? tx(language.nameKey ?? "");
+}
+
+function getLanguageDescription(languageId: LanguageId) {
+  return tx(getLanguageOption(languageId).descriptionKey);
+}
+
+const themeCopyKeys: Record<
+  ThemeId,
+  {
+    description: string;
+    name: string;
+  }
+> = {
+  dark: {
+    description: "settings.themes.darkDescription",
+    name: "settings.themes.darkName",
+  },
+  mint: {
+    description: "settings.themes.mintDescription",
+    name: "settings.themes.mintName",
+  },
+  parchment: {
+    description: "settings.themes.parchmentDescription",
+    name: "settings.themes.parchmentName",
+  },
+  rose: {
+    description: "settings.themes.roseDescription",
+    name: "settings.themes.roseName",
+  },
+  sage: {
+    description: "settings.themes.sageDescription",
+    name: "settings.themes.sageName",
+  },
+  sky: {
+    description: "settings.themes.skyDescription",
+    name: "settings.themes.skyName",
+  },
 };
 
-const shadow: StyleProp<ViewStyle> = {
-  shadowColor: colors.text,
-  shadowOpacity: 0.07,
-  shadowRadius: 14,
-  shadowOffset: { width: 0, height: 6 },
-};
+function getThemeName(theme: AppTheme) {
+  return tx(themeCopyKeys[theme.id].name);
+}
 
-const styles = StyleSheet.create({
+function getThemeDescription(theme: AppTheme) {
+  return tx(themeCopyKeys[theme.id].description);
+}
+
+function getModelDescription(model: ModelOption) {
+  return tx(model.descriptionKey);
+}
+
+async function readPersistedMobileSettings() {
+  if (Platform.OS === "web") {
+    const raw = globalThis.localStorage?.getItem(mobileSettingsStorageKey);
+
+    return raw
+      ? (JSON.parse(raw) as Partial<PersistedMobileSettings>)
+      : undefined;
+  }
+
+  const uri = getMobileSettingsFileUri();
+
+  if (!uri) return undefined;
+
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+
+    if (!info.exists) return undefined;
+
+    const raw = await FileSystem.readAsStringAsync(uri);
+
+    return JSON.parse(raw) as Partial<PersistedMobileSettings>;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writePersistedMobileSettings(settings: PersistedMobileSettings) {
+  const raw = JSON.stringify(settings);
+
+  if (Platform.OS === "web") {
+    globalThis.localStorage?.setItem(mobileSettingsStorageKey, raw);
+    return;
+  }
+
+  const uri = getMobileSettingsFileUri();
+
+  if (!uri) return;
+
+  await FileSystem.writeAsStringAsync(uri, raw);
+}
+
+function getMobileSettingsFileUri() {
+  const directory = FileSystem.documentDirectory ?? FileSystem.cacheDirectory;
+
+  return directory ? `${directory}essai-mobile-settings.json` : null;
+}
+
+function getTransferSectionCopy(sectionId: TransferSectionId) {
+  if (sectionId === "config") {
+    return {
+      description: tx("pages.settings.exportConfigDescription"),
+      title: tx("pages.settings.exportConfigTitle"),
+    };
+  }
+
+  return {
+    description: tx("pages.settings.exportDataDescription"),
+    title: tx("pages.settings.exportDataTitle"),
+  };
+}
+
+async function writeBackupBundle({
+  data,
+  selection,
+  settings,
+}: {
+  data: BackupDataPayload;
+  selection: Record<TransferSectionId, boolean>;
+  settings: PersistedMobileSettings;
+}) {
+  const zip = new JSZip();
+  const sections = (["data", "config"] as TransferSectionId[]).filter(
+    (sectionId) => selection[sectionId],
+  );
+  const fileName = createBackupFileName();
+
+  zip.file(
+    "manifest.json",
+    JSON.stringify(
+      {
+        app: "essai",
+        createdAt: new Date().toISOString(),
+        sections,
+        version: 1,
+      },
+      null,
+      2,
+    ),
+  );
+
+  if (selection.data) {
+    zip.file("data.json", JSON.stringify(data, null, 2));
+  }
+
+  if (selection.config) {
+    zip.file("settings.json", JSON.stringify(settings, null, 2));
+  }
+
+  if (Platform.OS === "web") {
+    const blob = await zip.generateAsync({ type: "blob" });
+    downloadWebBlob(blob, fileName);
+    return;
+  }
+
+  const directory = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
+
+  if (!directory) {
+    throw new Error("File system is unavailable.");
+  }
+
+  const uri = `${directory}${fileName}`;
+  const base64 = await zip.generateAsync({ type: "base64" });
+
+  await FileSystem.writeAsStringAsync(uri, base64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+
+  const canShare = await Sharing.isAvailableAsync();
+
+  if (!canShare) {
+    throw new Error("Sharing is unavailable.");
+  }
+
+  await Sharing.shareAsync(uri, {
+    UTI: "com.pkware.zip-archive",
+    dialogTitle: tx("pages.settings.exportTitle"),
+    mimeType: "application/zip",
+  });
+}
+
+async function pickBackupBundle(): Promise<ParsedBackupBundle | null> {
+  const result = await DocumentPicker.getDocumentAsync({
+    base64: Platform.OS === "web",
+    copyToCacheDirectory: true,
+    type: [
+      "application/zip",
+      "application/x-zip-compressed",
+      "application/octet-stream",
+    ],
+  });
+
+  if (result.canceled) return null;
+
+  const asset = result.assets[0];
+
+  if (!asset) return null;
+
+  const zip = await loadPickedZip(asset);
+  const data = await readBackupJson<BackupDataPayload>(zip, "data.json");
+  const settings = await readBackupJson<Partial<PersistedMobileSettings>>(
+    zip,
+    "settings.json",
+  );
+  const available = {
+    config: isBackupSettingsPayload(settings),
+    data: isBackupDataPayload(data),
+  };
+
+  if (!available.config && !available.data) {
+    throw new Error("No supported backup content found.");
+  }
+
+  return {
+    available,
+    data: available.data ? data : undefined,
+    fileName: asset.name,
+    settings: available.config ? settings : undefined,
+  };
+}
+
+async function loadPickedZip(asset: DocumentPicker.DocumentPickerAsset) {
+  if (asset.base64) {
+    return JSZip.loadAsync(asset.base64, { base64: true });
+  }
+
+  if (asset.file) {
+    return JSZip.loadAsync(await asset.file.arrayBuffer());
+  }
+
+  const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+
+  return JSZip.loadAsync(base64, { base64: true });
+}
+
+async function readBackupJson<T>(zip: JSZip, path: string) {
+  const file = zip.file(path);
+
+  if (!file) return undefined;
+
+  return JSON.parse(await file.async("string")) as T;
+}
+
+function isBackupDataPayload(value: unknown): value is BackupDataPayload {
+  if (!value || typeof value !== "object") return false;
+
+  const payload = value as Partial<BackupDataPayload>;
+
+  return (
+    Array.isArray(payload.fragments) &&
+    Array.isArray(payload.laws) &&
+    Array.isArray(payload.schemes)
+  );
+}
+
+function isBackupSettingsPayload(
+  value: unknown,
+): value is Partial<PersistedMobileSettings> {
+  if (!value || typeof value !== "object") return false;
+
+  const payload = value as Partial<PersistedMobileSettings>;
+
+  return (
+    isThemeId(payload.themeId) ||
+    isLanguageId(payload.languageId) ||
+    typeof payload.activeModelId === "string" ||
+    payload.activeModelId === null
+  );
+}
+
+function createBackupFileName() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+
+  return `essai-backup-${stamp}.zip`;
+}
+
+function downloadWebBlob(blob: Blob, fileName: string) {
+  const documentRef = globalThis.document;
+  const urlApi = globalThis.URL;
+
+  if (!documentRef || !urlApi) {
+    throw new Error("Browser download is unavailable.");
+  }
+
+  const url = urlApi.createObjectURL(blob);
+  const anchor = documentRef.createElement("a");
+
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.style.display = "none";
+  documentRef.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  urlApi.revokeObjectURL(url);
+}
+
+function getAvailableModels(providerKeys: ProviderKeys): AvailableModelOption[] {
+  return modelProviders.flatMap((provider) => {
+    if (providerKeys[provider.id].trim().length === 0) return [];
+
+    return provider.models.map((model) => ({
+      ...model,
+      providerName: provider.name,
+    }));
+  });
+}
+
+function createThemedStyles(colors: ThemeColors) {
+  const shadow: StyleProp<ViewStyle> = {
+    shadowColor: colors.text,
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 5,
+  };
+
+  return StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: colors.background,
+  },
+  gestureRoot: {
+    flex: 1,
   },
   shell: {
     flex: 1,
@@ -2278,24 +5817,25 @@ const styles = StyleSheet.create({
     alignItems: "center",
     height: 42,
     justifyContent: "center",
-    marginLeft: -6,
     width: 42,
   },
   navigationHeaderTitle: {
+    alignItems: "center",
     minWidth: 0,
-    paddingRight: 8,
   },
   navigationHeaderPrimary: {
     color: colors.text,
     fontSize: 19,
     fontWeight: "800",
     lineHeight: 25,
+    textAlign: "center",
   },
   navigationHeaderSecondary: {
     color: colors.muted,
     fontSize: 12,
     lineHeight: 18,
     marginTop: 1,
+    textAlign: "center",
   },
   content: {
     flex: 1,
@@ -2350,6 +5890,8 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderRadius: 12,
     borderWidth: 1,
+    flexDirection: "row",
+    gap: 7,
     justifyContent: "center",
     minHeight: 42,
     paddingHorizontal: 16,
@@ -2442,11 +5984,13 @@ const styles = StyleSheet.create({
   },
   bottomNavText: {
     color: colors.muted,
-    fontSize: 13,
-    fontWeight: "800",
+    fontSize: 10,
+    fontWeight: "600",
+    lineHeight: 13,
   },
   bottomNavTextActive: {
     color: colors.text,
+    fontWeight: "700",
   },
   masonry: {
     flexDirection: "row",
@@ -2472,13 +6016,14 @@ const styles = StyleSheet.create({
   moreItem: {
     alignItems: "center",
     backgroundColor: colors.card,
-    borderColor: "rgba(48, 33, 23, 0.1)",
+    borderColor: colors.cardBorder,
     borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1,
     flexDirection: "row",
     gap: 14,
     minHeight: 82,
     padding: 14,
+    ...shadow,
   },
   moreIcon: {
     alignItems: "center",
@@ -2509,24 +6054,166 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: "600",
   },
-  fragmentCard: {
+  settingsLead: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 23,
+  },
+  settingsList: {
+    gap: 12,
+  },
+  settingChoice: {
+    alignItems: "center",
     backgroundColor: colors.card,
-    borderColor: "rgba(48, 33, 23, 0.1)",
+    borderColor: colors.cardBorder,
     borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 14,
+    minHeight: 76,
+    padding: 14,
+  },
+  settingChoiceText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  settingChoiceTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: "800",
+    lineHeight: 21,
+  },
+  settingChoiceDescription: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 19,
+    marginTop: 3,
+  },
+  selectionMark: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    height: 24,
+    justifyContent: "center",
+    width: 24,
+  },
+  selectionMarkActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  themeGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  themeOption: {
+    backgroundColor: colors.card,
+    borderColor: colors.cardBorder,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 12,
+    minHeight: 156,
+    padding: 14,
+    width: "48%",
+  },
+  themeSwatchRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 7,
+  },
+  themeSwatchLarge: {
+    borderColor: colors.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    height: 34,
+    width: 48,
+  },
+  themeSwatch: {
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    height: 22,
+    width: 22,
+  },
+  providerCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.cardBorder,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 12,
+    padding: 14,
+  },
+  providerHeader: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: 12,
+  },
+  providerStatus: {
+    backgroundColor: colors.secondary,
+    borderRadius: 999,
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: "800",
     overflow: "hidden",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  providerStatusActive: {
+    backgroundColor: colors.primary,
+    color: colors.primaryText,
+  },
+  settingsInput: {
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    color: colors.text,
+    fontSize: 14,
+    minHeight: 42,
+    paddingHorizontal: 12,
+  },
+  modelSelectButton: {
+    alignItems: "center",
+    borderColor: colors.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 12,
+    minHeight: 70,
+    padding: 12,
+  },
+  modelSelectChevron: {
+    transform: [{ rotate: "90deg" }],
+  },
+  modelSelectChevronOpen: {
+    transform: [{ rotate: "-90deg" }],
+  },
+  modelOptionList: {
+    gap: 10,
+  },
+  fragmentCardShadow: {
+    borderRadius: 14,
     ...shadow,
   },
+  fragmentCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.cardBorder,
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
   fragmentPreviewArea: {
-    backgroundColor: "rgba(239, 230, 215, 0.42)",
-    minHeight: 184,
+    backgroundColor: colors.mutedSurface,
+    minHeight: 108,
     overflow: "hidden",
     paddingHorizontal: 16,
     paddingTop: 20,
     position: "relative",
   },
   fragmentPreviewText: {
-    color: "rgba(48, 33, 23, 0.82)",
+    color: colors.muted,
     fontSize: 14,
     lineHeight: 27,
   },
@@ -2629,11 +6316,15 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "800",
   },
+  gridCardShadow: {
+    borderRadius: 14,
+    ...shadow,
+  },
   gridCard: {
     backgroundColor: colors.card,
-    borderColor: "rgba(48, 33, 23, 0.1)",
+    borderColor: colors.cardBorder,
     borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1,
     minHeight: 154,
     overflow: "hidden",
   },
@@ -2655,7 +6346,7 @@ const styles = StyleSheet.create({
   },
   gridCardFooter: {
     alignItems: "center",
-    backgroundColor: "rgba(239, 230, 215, 0.48)",
+    backgroundColor: colors.mutedSurface,
     borderTopColor: colors.border,
     borderTopWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
@@ -2707,8 +6398,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   modalSafeArea: {
-    flex: 1,
     backgroundColor: colors.background,
+    flex: 1,
     paddingTop: 14,
   },
   modalHeader: {
@@ -2750,10 +6441,64 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
   },
-  composeBody: {
+  modalContentFrame: {
     flex: 1,
-    gap: 18,
     minHeight: 0,
+    position: "relative",
+  },
+  composeScroll: {
+    flex: 1,
+  },
+  composeScrollContent: {
+    flexGrow: 1,
+    gap: 18,
+    paddingHorizontal: 18,
+  },
+  modalFloatingAction: {
+    alignItems: "flex-end",
+    left: 18,
+    position: "absolute",
+    right: 18,
+    zIndex: 20,
+  },
+  draftGenerateBody: {
+    flex: 1,
+    minHeight: 0,
+    paddingHorizontal: 18,
+  },
+  draftSchemeSelectionBlock: {
+    flex: 1,
+    gap: 12,
+    minHeight: 0,
+  },
+  draftSchemeListScroll: {
+    flex: 1,
+  },
+  draftSchemeList: {
+    gap: 12,
+    paddingBottom: 16,
+  },
+  draftSchemeListCard: {
+    backgroundColor: colors.card,
+    borderColor: "transparent",
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: "hidden",
+    position: "relative",
+  },
+  draftSchemeListTop: {
+    gap: 10,
+    padding: 14,
+  },
+  draftSchemeListHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
+  },
+  draftEditBody: {
+    flex: 1,
+    minHeight: 0,
+    paddingBottom: 14,
     paddingHorizontal: 18,
   },
   composeInput: {
@@ -2768,6 +6513,9 @@ const styles = StyleSheet.create({
     minHeight: 280,
     padding: 16,
   },
+  composeInputCompact: {
+    minHeight: 140,
+  },
   schemeSelectionBlock: {
     flexShrink: 0,
     gap: 10,
@@ -2778,7 +6526,7 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   scrollerFrame: {
-    backgroundColor: "rgba(239, 230, 215, 0.45)",
+    backgroundColor: colors.mutedSurface,
     borderColor: colors.border,
     borderRadius: 18,
     borderWidth: 1,
@@ -2791,13 +6539,26 @@ const styles = StyleSheet.create({
   },
   schemeTile: {
     backgroundColor: colors.card,
-    borderColor: colors.border,
+    borderColor: "transparent",
     borderRadius: 14,
     borderWidth: 1,
     overflow: "hidden",
+    position: "relative",
     width: 208,
   },
-  schemeTileSelected: {
+  selectionBorderOverlay: {
+    borderColor: colors.border,
+    borderRadius: 14,
+    borderWidth: 1,
+    bottom: 0,
+    left: 0,
+    pointerEvents: "none",
+    position: "absolute",
+    right: 0,
+    top: 0,
+    zIndex: 1,
+  },
+  selectionBorderOverlaySelected: {
     borderColor: colors.primary,
     borderWidth: 2,
   },
@@ -2809,7 +6570,7 @@ const styles = StyleSheet.create({
   checkCircle: {
     alignItems: "center",
     backgroundColor: colors.background,
-    borderColor: "rgba(127, 113, 100, 0.55)",
+    borderColor: colors.mutedBorder,
     borderRadius: 999,
     borderWidth: 1,
     height: 22,
@@ -2838,7 +6599,7 @@ const styles = StyleSheet.create({
   },
   schemeTileFooter: {
     alignItems: "center",
-    backgroundColor: "rgba(239, 230, 215, 0.5)",
+    backgroundColor: colors.mutedSurface,
     borderTopColor: colors.border,
     borderTopWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
@@ -2947,7 +6708,7 @@ const styles = StyleSheet.create({
     width: 278,
   },
   lawPickTileSelected: {
-    backgroundColor: "rgba(239, 230, 215, 0.32)",
+    backgroundColor: colors.mutedSurface,
   },
   lawPickSelectionBorder: {
     borderColor: colors.primary,
@@ -2996,7 +6757,7 @@ const styles = StyleSheet.create({
     lineHeight: 21,
   },
   quickLawBox: {
-    backgroundColor: "rgba(239, 230, 215, 0.42)",
+    backgroundColor: colors.mutedSurface,
     borderColor: colors.border,
     borderRadius: 18,
     borderWidth: 1,
@@ -3105,7 +6866,7 @@ const styles = StyleSheet.create({
   },
   centerModalOverlay: {
     alignItems: "center",
-    backgroundColor: "rgba(48, 33, 23, 0.24)",
+    backgroundColor: colors.overlay,
     flex: 1,
     justifyContent: "center",
     padding: 24,
@@ -3155,6 +6916,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 18,
   },
+  draftDetailInner: {
+    flex: 1,
+    gap: 18,
+    minHeight: 0,
+    paddingBottom: 28,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+  },
   paperSurface: {
     backgroundColor: colors.card,
     borderColor: colors.border,
@@ -3176,14 +6945,280 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "800",
   },
-  draftCard: {
-    aspectRatio: 0.8,
+  draftSchemeCard: {
     backgroundColor: colors.card,
-    borderColor: "rgba(48, 33, 23, 0.1)",
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    borderRadius: 18,
+    borderWidth: 1,
+    gap: 12,
+    padding: 14,
+  },
+  draftSchemePreviewText: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 21,
+  },
+  draftLawPillRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  draftSchemeActions: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "flex-end",
+  },
+  draftContentHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
     justifyContent: "space-between",
+  },
+  draftVersionTopRow: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "space-between",
+  },
+  draftVersionMeta: {
+    alignItems: "flex-start",
+    gap: 7,
+  },
+  draftVersionActions: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexShrink: 1,
+    flexWrap: "wrap",
+    gap: 6,
+    justifyContent: "flex-end",
+  },
+  draftVersionActionButton: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    height: 30,
+    justifyContent: "center",
+    width: 30,
+  },
+  draftVersionDeleteButton: {
+    alignItems: "center",
+    backgroundColor: colors.dangerSoft,
+    borderRadius: 999,
+    height: 30,
+    justifyContent: "center",
+    width: 30,
+  },
+  versionStepper: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 7,
+  },
+  versionStepperButton: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    height: 34,
+    justifyContent: "center",
+    width: 34,
+  },
+  versionStepperButtonDisabled: {
+    opacity: 0.36,
+  },
+  versionNumberButton: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 10,
+    borderWidth: 1,
+    height: 34,
+    justifyContent: "center",
+    minWidth: 42,
+    paddingHorizontal: 12,
+  },
+  versionNumberText: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  versionTotalText: {
+    color: colors.muted,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  versionRow: {
+    flexDirection: "row",
+    gap: 10,
+    paddingRight: 18,
+  },
+  versionPill: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 12,
+    borderWidth: 1,
+    height: 44,
+    justifyContent: "center",
+    width: 54,
+  },
+  versionPillSelected: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  versionPillText: {
+    color: colors.text,
+    fontSize: 17,
+    fontWeight: "800",
+  },
+  versionPillTextSelected: {
+    color: colors.primaryText,
+  },
+  draftContentCarouselFrame: {
+    alignItems: "center",
+    flex: 1,
+    minHeight: 0,
     overflow: "hidden",
+  },
+  draftContentCarousel: {
+    alignItems: "center",
+    flex: 1,
+    justifyContent: "center",
+  },
+  draftCarouselItem: {
+    alignItems: "center",
+  },
+  draftContentCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 18,
+    borderWidth: 1,
+    gap: 16,
+    padding: 16,
+  },
+  draftContentCardFill: {
+    flex: 1,
+    minHeight: 0,
+  },
+  draftContentScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  draftContentScrollInner: {
+    paddingBottom: 2,
+  },
+  draftContentText: {
+    color: colors.text,
+    fontSize: 16,
+    lineHeight: 30,
+  },
+  jumpInputRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
+  },
+  jumpInput: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 14,
+    borderWidth: 1,
+    color: colors.text,
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "600",
+    minHeight: 52,
+    paddingHorizontal: 14,
+    textAlign: "center",
+  },
+  jumpTotalText: {
+    color: colors.muted,
+    fontSize: 17,
+    fontWeight: "800",
+    minWidth: 42,
+  },
+  versionModalCard: {
+    maxHeight: "78%",
+  },
+  versionModalScroll: {
+    minHeight: 0,
+  },
+  versionModalScrollInner: {
+    gap: 14,
+    paddingBottom: 2,
+  },
+  versionModalSection: {
+    gap: 7,
+  },
+  truncatedPreview: {
+    alignSelf: "stretch",
+    position: "relative",
+  },
+  truncatedMeasureText: {
+    left: 0,
+    opacity: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+    zIndex: -1,
+  },
+  truncatedVisibleText: {
+    alignSelf: "stretch",
+  },
+  truncatedVisibleTextWithMore: {
+    paddingRight: 54,
+  },
+  inlineMoreButton: {
+    backgroundColor: colors.card,
+    borderRadius: 999,
+    bottom: 0,
+    paddingLeft: 8,
+    position: "absolute",
+    right: 0,
+  },
+  inlineMoreButtonText: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  lawPillButton: {
+    backgroundColor: colors.secondary,
+    borderRadius: 999,
+    maxWidth: "100%",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  lawPillButtonText: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  versionModalLabel: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  versionModalText: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  versionEditorCard: {
+    maxHeight: "82%",
+  },
+  versionEditorInput: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 14,
+    borderWidth: 1,
+    color: colors.text,
+    flex: 1,
+    fontSize: 15,
+    lineHeight: 24,
+    minHeight: 240,
+    padding: 14,
   },
   lawDetailCard: {
     backgroundColor: colors.card,
@@ -3207,3 +7242,4 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 });
+}
