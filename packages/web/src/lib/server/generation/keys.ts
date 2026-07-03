@@ -1,7 +1,6 @@
 import type { EncryptedApiKey, Provider } from "./schemas";
+import { decryptApiKey } from "./encryption";
 import { GenerationRequestError } from "./errors";
-
-const privateKeyEnvName = "GENERATION_API_KEY_PRIVATE_JWK";
 
 export async function resolveProviderApiKey({
   explicitApiKey,
@@ -38,54 +37,4 @@ export async function resolveProviderApiKey({
   }
 
   return apiKey;
-}
-
-async function decryptApiKey(encryptedApiKey: EncryptedApiKey) {
-  const privateJwk = process.env[privateKeyEnvName]?.trim();
-
-  if (!privateJwk) {
-    throw new GenerationRequestError(
-      "missing_private_key",
-      `Missing ${privateKeyEnvName}; cannot decrypt encrypted provider key.`,
-      500,
-      null,
-    );
-  }
-
-  try {
-    const key = await crypto.subtle.importKey(
-      "jwk",
-      JSON.parse(privateJwk) as JsonWebKey,
-      { name: "RSA-OAEP", hash: "SHA-256" },
-      false,
-      ["decrypt"],
-    );
-    const decrypted = await crypto.subtle.decrypt(
-      { name: "RSA-OAEP" },
-      key,
-      decodeCiphertext(encryptedApiKey),
-    );
-
-    return new TextDecoder().decode(decrypted);
-  } catch {
-    throw new GenerationRequestError(
-      "decrypt_api_key_failed",
-      "Could not decrypt the provider API key.",
-      400,
-      400,
-    );
-  }
-}
-
-function decodeCiphertext(encryptedApiKey: EncryptedApiKey) {
-  const normalized =
-    encryptedApiKey.encoding === "base64url"
-      ? encryptedApiKey.ciphertext.replace(/-/g, "+").replace(/_/g, "/")
-      : encryptedApiKey.ciphertext;
-  const padded = normalized.padEnd(
-    normalized.length + ((4 - (normalized.length % 4)) % 4),
-    "=",
-  );
-
-  return Buffer.from(padded, "base64");
 }

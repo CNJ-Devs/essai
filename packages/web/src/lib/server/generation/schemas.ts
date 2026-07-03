@@ -25,6 +25,19 @@ export const encryptedApiKeySchema = z.object({
 });
 export type EncryptedApiKey = z.infer<typeof encryptedApiKeySchema>;
 
+export const encryptedRequestSchema = z.object({
+  schemaVersion: z.literal(1),
+  encryptedRequest: z.object({
+    alg: z.literal("A256GCM+RSA-OAEP-256"),
+    encryptedKey: z.string().min(1),
+    iv: z.string().min(1),
+    ciphertext: z.string().min(1),
+    encoding: z.enum(["base64url", "base64"]).default("base64url"),
+    keyId: z.string().trim().optional(),
+  }),
+});
+export type EncryptedRequest = z.infer<typeof encryptedRequestSchema>;
+
 export const providerOptionsSchema = z.object({
   maxOutputTokens: z.number().int().min(64).max(8192).default(1800),
   temperature: z.number().min(0).max(2).optional(),

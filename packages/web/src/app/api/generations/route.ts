@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createExecutionBudget } from "@/lib/server/generation/budget";
+import { parseMaybeEncryptedBody } from "@/lib/server/generation/encryption";
 import { normalizeGenerationError } from "@/lib/server/generation/errors";
 import { resolveProviderApiKey } from "@/lib/server/generation/keys";
 import { callGenerationProvider } from "@/lib/server/generation/provider";
@@ -24,7 +25,10 @@ export async function POST(request: Request) {
   const startedAt = Date.now();
 
   try {
-    const parsed = generationCreateRequestSchema.safeParse(await request.json());
+    const parsed = await parseMaybeEncryptedBody(
+      await request.json(),
+      generationCreateRequestSchema,
+    );
 
     if (!parsed.success) {
       return jsonError({
