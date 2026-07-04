@@ -10,6 +10,30 @@ This file records decisions that should survive chat compaction and future sessi
 - Authentication is not required for the current phase.
 - Users provide their own model API keys. Keys should not be stored by our backend.
 
+## Release Tagging
+
+- This repo is a monorepo, but release tags should be package/product specific.
+- Web/API release tags use the prefix `essai-web-v`, for example `essai-web-v0.1.0`.
+- Mobile release tags should use the prefix `essai-mobile-v`, for example `essai-mobile-v0.1.0`.
+- Web/API tags are production release triggers. Do not tag pre-monorepo commits with `essai-web-v*`, because the current Vercel project expects the monorepo package layout.
+- We are using a single-line release process for now. Every completed, releasable Web/API change should get a tag.
+- Not tagging a commit requires a concrete reason, such as:
+  - The commit is an incomplete intermediate attempt.
+  - The commit is superseded by a later commit that completes the same fix or product decision.
+  - The commit only changes mobile or docs and has no Web/API release effect.
+- Version bump rules while the major version is `0`:
+  - `0.x.0` for feature-level Web/API changes or product-contract changes.
+  - `0.x.y` for bug fixes, reliability fixes, provider cleanup, copy/prompt tightening, or deployment compatibility fixes.
+- Prefer annotated tags for releases.
+- Current Web/API release series:
+  - `essai-web-v0.1.0`: monorepo Web UI baseline.
+  - `essai-web-v0.1.1`: deployment/font compatibility fix.
+  - `essai-web-v0.2.0`: initial generation API backend.
+  - `essai-web-v0.3.0`: generation recovery and follow API.
+  - `essai-web-v0.4.0`: duplicate request fingerprint handling.
+  - `essai-web-v0.4.1`: remove mock generation provider.
+  - `essai-web-v0.5.0`: rewrite generation payloads.
+
 ## Mobile Data
 
 - SQLite is the source of truth on mobile.
