@@ -88,6 +88,30 @@ async function runMockSuite({ baseUrl, keys }) {
     generation,
   );
 
+  console.log("[mock] duplicate generation id");
+  const duplicateGeneration = await postJson(
+    baseUrl,
+    "/api/generations",
+    await encryptRequest(keys, {
+      provider: "mock",
+      generations: [
+        {
+          id: generationId,
+          payload: sampleDraftPayload(),
+        },
+      ],
+      options: {
+        maxOutputTokens: 256,
+      },
+    }),
+  );
+  assert(
+    duplicateGeneration.records?.[0]?.id === generationId &&
+      duplicateGeneration.records[0].status === "succeeded",
+    "duplicate generation id did not return the existing record",
+    duplicateGeneration,
+  );
+
   console.log("[mock] encrypted title");
   const title = await postJson(
     baseUrl,

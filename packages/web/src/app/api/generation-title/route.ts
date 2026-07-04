@@ -17,6 +17,7 @@ import {
 } from "@/lib/server/generation/schemas";
 import {
   buildTimedOutRecord,
+  getGenerationRecord,
   getGenerationStoreMode,
   isRecordPastDeadline,
   saveGenerationRecord,
@@ -47,6 +48,28 @@ export async function POST(request: Request) {
     const budget = createExecutionBudget(startedAt, input.timeoutMs);
     const model = input.model || providerDefaults[input.provider];
     const expiresAt = new Date(startedAt + input.ttlSeconds * 1000).toISOString();
+    const existingRecord = await getGenerationRecord(input.id);
+
+    if (existingRecord) {
+      if (existingRecord.kind !== "title") {
+        return jsonError({
+          code: "generation_id_conflict",
+          message: `Generation id already exists for kind: ${existingRecord.kind}.`,
+          status: 409,
+          startedAt,
+        });
+      }
+
+      return Response.json({
+        ok: existingRecord.status === "succeeded",
+        id: input.id,
+        title: existingRecord.title,
+        record: existingRecord,
+        store: getGenerationStoreMode(),
+        durationMs: Date.now() - startedAt,
+      });
+    }
+
     const apiKey = await resolveProviderApiKey({
       explicitApiKey: input.apiKey,
       encryptedApiKey: input.encryptedApiKey,

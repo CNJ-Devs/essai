@@ -15,6 +15,7 @@ import {
 } from "@/lib/server/generation/schemas";
 import {
   buildTimedOutRecord,
+  getGenerationRecord,
   getGenerationStoreMode,
   isRecordPastDeadline,
   saveGenerationRecord,
@@ -45,15 +46,26 @@ export async function POST(request: Request) {
     const budget = createExecutionBudget(startedAt, input.timeoutMs);
     const model = input.model || providerDefaults[input.provider];
     const expiresAt = new Date(startedAt + input.ttlSeconds * 1000).toISOString();
-    const apiKey = await resolveProviderApiKey({
-      explicitApiKey: input.apiKey,
-      encryptedApiKey: input.encryptedApiKey,
-      provider: input.provider,
-      request,
-    });
+    const preparedGenerations = await Promise.all(
+      input.generations.map(async (generation) => ({
+        existingRecord: await getGenerationRecord(generation.id),
+        generation,
+      })),
+    );
+    const hasNewGenerations = preparedGenerations.some(
+      (item) => !item.existingRecord,
+    );
+    const apiKey = hasNewGenerations
+      ? await resolveProviderApiKey({
+          explicitApiKey: input.apiKey,
+          encryptedApiKey: input.encryptedApiKey,
+          provider: input.provider,
+          request,
+        })
+      : "";
 
     const records = await Promise.all(
-      input.generations.map(async (generation) => {
+      preparedGenerations.map(async ({ existingRecord, generation }) => {
         const runningRecord = buildDraftRecord({
           budget,
           expiresAt,
@@ -62,6 +74,12 @@ export async function POST(request: Request) {
           provider: input.provider,
           status: "running",
         });
+
+        if (existingRecord) {
+          return existingRecord.kind === "draft"
+            ? existingRecord
+            : buildIdConflictRecord(runningRecord, existingRecord.kind);
+        }
 
         await saveGenerationRecord(runningRecord, input.ttlSeconds);
 
@@ -175,6 +193,22 @@ function toGenerationError(error: {
     code: error.code,
     message: error.message,
     providerStatus: error.providerStatus,
+  };
+}
+
+function buildIdConflictRecord(
+  record: GenerationRecord,
+  existingKind: GenerationRecord["kind"],
+): GenerationRecord {
+  return {
+    ...record,
+    status: "failed",
+    error: {
+      code: "generation_id_conflict",
+      message: `Generation id already exists for kind: ${existingKind}.`,
+      providerStatus: null,
+    },
+    updatedAt: new Date().toISOString(),
   };
 }
 
