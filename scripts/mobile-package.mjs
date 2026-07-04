@@ -15,7 +15,7 @@ Usage:
 Options:
   --env-file <path>          Env file to load. Defaults to packages/mobile/.env.production.
   --android-variant <name>   Android Gradle variant: release or debug. Defaults to release.
-  --ios-device <value>       iOS device selector. Defaults to device.
+  --ios-device <value>       iOS device selector. Defaults to the first connected device.
                              Use generic for a build-only simulator app.
   --no-clean                 Skip clean Expo prebuild before packaging.
   -h, --help                 Show this help.
@@ -109,24 +109,61 @@ async function packageAndroid(options) {
 }
 
 async function packageIos(options) {
+  const iosDevice = options.iosDevice ?? detectFirstIosDevice();
+
+  if (!iosDevice) {
+    throw new Error(
+      "No connected iOS device found. Unlock the device, trust this computer, and try again.",
+    );
+  }
+
   const command = [
     "expo",
     "run:ios",
     "--configuration",
     "Release",
     "--device",
-    options.iosDevice,
+    iosDevice,
   ];
 
-  if (options.iosDevice === "generic") {
+  if (iosDevice === "generic") {
     command.push("--output", resolve(repoRoot, "build/mobile/ios"));
   }
 
   await run("npx", command, { cwd: mobileDir });
 
-  if (options.iosDevice === "generic") {
+  if (iosDevice === "generic") {
     console.log("iOS simulator app output: build/mobile/ios/");
   }
+}
+
+function detectFirstIosDevice() {
+  try {
+    const output = execFileSync("xcrun", ["devicectl", "list", "devices"], {
+      encoding: "utf8",
+    });
+    const rows = output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    for (const row of rows) {
+      const columns = row.split(/\s{2,}/);
+      const [name, , , state, model] = columns;
+
+      if (
+        name &&
+        (state === "available" || state?.startsWith("connected")) &&
+        (model?.startsWith("iPhone") || model?.startsWith("iPad"))
+      ) {
+        return name;
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 function parseOptions(args) {
@@ -134,7 +171,7 @@ function parseOptions(args) {
     androidVariant: "release",
     clean: true,
     envFile: null,
-    iosDevice: "device",
+    iosDevice: null,
   };
 
   for (let index = 0; index < args.length; index += 1) {
