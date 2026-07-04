@@ -58,6 +58,27 @@ export async function getGenerationRecords(ids: string[]) {
   return { records, missingIds };
 }
 
+export async function getGenerationRecord(id: string) {
+  const record = await getGenerationRecordRaw(id);
+
+  if (!record) {
+    return null;
+  }
+
+  if (isRecordCacheExpired(record)) {
+    await deleteGenerationRecords([id]);
+    return null;
+  }
+
+  if (isRecordPastDeadline(record)) {
+    const timedOutRecord = buildTimedOutRecord(record);
+    await saveGenerationRecord(timedOutRecord, remainingTtlSeconds(timedOutRecord));
+    return timedOutRecord;
+  }
+
+  return record;
+}
+
 export async function deleteGenerationRecords(ids: string[]) {
   if (redis) {
     const deletedCount = await redis.del(...ids.map(storageKey));
@@ -86,7 +107,7 @@ export function getGenerationStoreMode() {
   return redis ? "upstash" : "memory";
 }
 
-async function getGenerationRecord(id: string) {
+async function getGenerationRecordRaw(id: string) {
   if (redis) {
     return redis.get<GenerationRecord>(storageKey(id));
   }
@@ -103,6 +124,51 @@ async function getGenerationRecord(id: string) {
   }
 
   return cached.record;
+}
+
+export function isGenerationRecordTerminal(record: GenerationRecord) {
+  return record.status === "succeeded" || record.status === "failed";
+}
+
+export function isRecordPastDeadline(record: GenerationRecord) {
+  return (
+    record.status === "running" &&
+    Number.isFinite(Date.parse(record.deadlineAt)) &&
+    Date.parse(record.deadlineAt) <= Date.now()
+  );
+}
+
+export function buildTimedOutRecord(record: GenerationRecord): GenerationRecord {
+  if (record.status !== "running") {
+    return record;
+  }
+
+  return {
+    ...record,
+    status: "failed",
+    error: {
+      code: "generation_timeout",
+      message: "Generation did not finish before its deadline.",
+      providerStatus: null,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function isRecordCacheExpired(record: GenerationRecord) {
+  return Number.isFinite(Date.parse(record.expiresAt))
+    ? Date.parse(record.expiresAt) <= Date.now()
+    : false;
+}
+
+function remainingTtlSeconds(record: GenerationRecord) {
+  const expiresAt = Date.parse(record.expiresAt);
+
+  if (!Number.isFinite(expiresAt)) {
+    return generationTtlSeconds;
+  }
+
+  return Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000));
 }
 
 function storageKey(id: string) {

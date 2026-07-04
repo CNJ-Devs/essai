@@ -14,7 +14,9 @@ import {
   type GenerationRecord,
 } from "@/lib/server/generation/schemas";
 import {
+  buildTimedOutRecord,
   getGenerationStoreMode,
+  isRecordPastDeadline,
   saveGenerationRecord,
 } from "@/lib/server/generation/store";
 
@@ -49,22 +51,6 @@ export async function POST(request: Request) {
       provider: input.provider,
       request,
     });
-
-    await Promise.all(
-      input.generations.map((generation) =>
-        saveGenerationRecord(
-          buildDraftRecord({
-            budget,
-            expiresAt,
-            generation,
-            model,
-            provider: input.provider,
-            status: "queued",
-          }),
-          input.ttlSeconds,
-        ),
-      ),
-    );
 
     const records = await Promise.all(
       input.generations.map(async (generation) => {
@@ -101,9 +87,12 @@ export async function POST(request: Request) {
             },
             updatedAt: new Date().toISOString(),
           };
+          const finalRecord = isRecordPastDeadline(runningRecord)
+            ? buildTimedOutRecord(runningRecord)
+            : succeededRecord;
 
-          await saveGenerationRecord(succeededRecord, input.ttlSeconds);
-          return succeededRecord;
+          await saveGenerationRecord(finalRecord, input.ttlSeconds);
+          return finalRecord;
         } catch (error) {
           const failure = normalizeGenerationError(error);
           const failedRecord: GenerationRecord = {
@@ -170,6 +159,7 @@ function buildDraftRecord({
     workflowTimeoutMs: budget.workflowTimeoutMs,
     providerTimeoutMs: budget.providerTimeoutMs,
     finalizationReserveMs: budget.finalizationReserveMs,
+    deadlineAt: new Date(budget.deadlineAt).toISOString(),
     createdAt: now,
     updatedAt: now,
     expiresAt,

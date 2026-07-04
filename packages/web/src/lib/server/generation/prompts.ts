@@ -16,13 +16,13 @@ export function buildDraftGenerationPrompt(payload: DraftPayload) {
   };
   const snapshot: SchemeSnapshot = {
     schemeId: payload.scheme.id || "client-scheme",
-    schemeName: payload.scheme.name,
-    schemeDescription: payload.scheme.description,
+    schemeName: payload.scheme.title,
+    schemeDescription: payload.scheme.content,
     laws: payload.laws
       .map((law, index) => ({
         lawId: law.id || `client-law-${index + 1}`,
-        name: law.name,
-        prompt: law.prompt || law.content || "",
+        name: law.title,
+        prompt: law.content,
       }))
       .filter((law) => law.prompt),
     snapshottedAt: now,

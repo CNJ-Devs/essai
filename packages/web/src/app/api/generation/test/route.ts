@@ -30,16 +30,15 @@ const requestSchema = z.object({
   }),
   scheme: z
     .object({
-      name: z.string().trim().min(1),
-      description: z.string().trim().min(1),
+      title: z.string().trim().min(1),
+      content: z.string().trim().min(1),
     })
     .optional(),
   laws: z
     .array(
       z.object({
-        name: z.string().trim().min(1),
-        prompt: z.string().trim().optional(),
-        content: z.string().trim().optional(),
+        title: z.string().trim().min(1),
+        content: z.string().trim().min(1),
       }),
     )
     .default([]),
@@ -231,15 +230,15 @@ function buildPromptInput(input: z.infer<typeof requestSchema>) {
   };
   const snapshot: SchemeSnapshot = {
     schemeId: "test-scheme",
-    schemeName: input.scheme?.name || "自由初稿",
+    schemeName: input.scheme?.title || "自由初稿",
     schemeDescription:
-      input.scheme?.description ||
+      input.scheme?.content ||
       "把碎片整理成一版可继续编辑的初稿，保留自然语气和清晰判断。",
     laws: input.laws
       .map((law, index) => ({
         lawId: `test-law-${index + 1}`,
-        name: law.name,
-        prompt: law.prompt || law.content || "",
+        name: law.title,
+        prompt: law.content,
       }))
       .filter((law) => law.prompt),
     snapshottedAt: now,

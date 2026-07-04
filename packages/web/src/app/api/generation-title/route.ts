@@ -16,7 +16,9 @@ import {
   type GenerationRecord,
 } from "@/lib/server/generation/schemas";
 import {
+  buildTimedOutRecord,
   getGenerationStoreMode,
+  isRecordPastDeadline,
   saveGenerationRecord,
 } from "@/lib/server/generation/store";
 
@@ -59,13 +61,6 @@ export async function POST(request: Request) {
       status: "running",
     });
 
-    await saveGenerationRecord(
-      {
-        ...runningRecord,
-        status: "queued",
-      },
-      input.ttlSeconds,
-    );
     await saveGenerationRecord(runningRecord, input.ttlSeconds);
 
     try {
@@ -92,14 +87,17 @@ export async function POST(request: Request) {
         },
         updatedAt: new Date().toISOString(),
       };
+      const finalRecord = isRecordPastDeadline(runningRecord)
+        ? buildTimedOutRecord(runningRecord)
+        : succeededRecord;
 
-      await saveGenerationRecord(succeededRecord, input.ttlSeconds);
+      await saveGenerationRecord(finalRecord, input.ttlSeconds);
 
       return Response.json({
-        ok: true,
+        ok: finalRecord.status === "succeeded",
         id: input.id,
-        title,
-        record: succeededRecord,
+        title: finalRecord.status === "succeeded" ? title : null,
+        record: finalRecord,
         store: getGenerationStoreMode(),
         durationMs: Date.now() - startedAt,
       });
@@ -165,6 +163,7 @@ function buildTitleRecord({
     workflowTimeoutMs: budget.workflowTimeoutMs,
     providerTimeoutMs: budget.providerTimeoutMs,
     finalizationReserveMs: budget.finalizationReserveMs,
+    deadlineAt: new Date(budget.deadlineAt).toISOString(),
     createdAt: now,
     updatedAt: now,
     expiresAt,

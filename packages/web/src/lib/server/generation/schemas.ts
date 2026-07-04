@@ -9,12 +9,7 @@ export type Provider = z.infer<typeof providerSchema>;
 export const generationKindSchema = z.enum(["draft", "title"]);
 export type GenerationKind = z.infer<typeof generationKindSchema>;
 
-export const generationStatusSchema = z.enum([
-  "queued",
-  "running",
-  "succeeded",
-  "failed",
-]);
+export const generationStatusSchema = z.enum(["running", "succeeded", "failed"]);
 export type GenerationStatus = z.infer<typeof generationStatusSchema>;
 
 export const encryptedApiKeySchema = z.object({
@@ -53,15 +48,14 @@ const fragmentPayloadSchema = z.object({
 
 const schemePayloadSchema = z.object({
   id: z.string().trim().optional(),
-  name: z.string().trim().min(1),
-  description: z.string().trim().min(1),
+  title: z.string().trim().min(1),
+  content: z.string().trim().min(1),
 });
 
 const lawPayloadSchema = z.object({
   id: z.string().trim().optional(),
-  name: z.string().trim().min(1),
-  prompt: z.string().trim().optional(),
-  content: z.string().trim().optional(),
+  title: z.string().trim().min(1),
+  content: z.string().trim().min(1),
 });
 
 export const draftPayloadSchema = z.object({
@@ -105,6 +99,11 @@ export type GenerationPullRequest = z.infer<typeof generationPullRequestSchema>;
 export const generationCleanupRequestSchema = generationPullRequestSchema;
 export type GenerationCleanupRequest = z.infer<typeof generationCleanupRequestSchema>;
 
+export const generationFollowRequestSchema = generationPullRequestSchema.extend({
+  intervalMs: z.number().int().min(500).max(10_000).default(1_000),
+});
+export type GenerationFollowRequest = z.infer<typeof generationFollowRequestSchema>;
+
 export const titleCreateRequestSchema = z.object({
   id: z.string().trim().min(1),
   provider: providerSchema.default("mock"),
@@ -147,6 +146,7 @@ export type GenerationRecord = {
   workflowTimeoutMs: number;
   providerTimeoutMs: number;
   finalizationReserveMs: number;
+  deadlineAt: string;
   createdAt: string;
   updatedAt: string;
   expiresAt: string;

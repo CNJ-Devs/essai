@@ -120,6 +120,36 @@ async function runMockSuite({ baseUrl, keys }) {
     pulled,
   );
 
+  console.log("[mock] follow");
+  const followed = await getSseEvents(
+    baseUrl,
+    `/api/generations/follow?ids=${generationId},${titleId},smoke_missing&intervalMs=500`,
+  );
+  assert(
+    followed.some(
+      (event) =>
+        event.event === "generation.record" &&
+        event.data?.record?.id === generationId &&
+        event.data.record.status === "succeeded",
+    ),
+    "follow did not emit succeeded generation record",
+    followed,
+  );
+  assert(
+    followed.some(
+      (event) =>
+        event.event === "generation.expired" &&
+        event.data?.id === "smoke_missing",
+    ),
+    "follow did not emit expired missing id",
+    followed,
+  );
+  assert(
+    followed.some((event) => event.event === "generation.done"),
+    "follow did not complete",
+    followed,
+  );
+
   console.log("[mock] cleanup");
   const cleaned = await postJson(baseUrl, "/api/generations/cleanup", {
     ids: [generationId, titleId],
@@ -305,6 +335,79 @@ async function postJson(baseUrl, path, body) {
   return data;
 }
 
+async function getSseEvents(baseUrl, path) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    headers: {
+      accept: "text/event-stream",
+    },
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!response.ok) {
+    throw withDetails(`GET ${path} failed with ${response.status}`, {
+      body: await response.text(),
+    });
+  }
+
+  const reader = response.body?.getReader();
+
+  if (!reader) {
+    throw new Error(`GET ${path} returned no response body`);
+  }
+
+  const decoder = new TextDecoder();
+  const events = [];
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+
+    while (buffer.includes("\n\n")) {
+      const boundary = buffer.indexOf("\n\n");
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const event = parseSseEvent(block);
+
+      if (event) {
+        events.push(event);
+      }
+
+      if (
+        event?.event === "generation.done" ||
+        event?.event === "generation.pause" ||
+        event?.event === "generation.error"
+      ) {
+        return events;
+      }
+    }
+  }
+
+  return events;
+}
+
+function parseSseEvent(block) {
+  const lines = block.split("\n").filter((line) => !line.startsWith(":"));
+  const eventLine = lines.find((line) => line.startsWith("event:"));
+  const dataLines = lines
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart());
+
+  if (!eventLine && dataLines.length === 0) {
+    return null;
+  }
+
+  return {
+    data: dataLines.length > 0 ? parseJson(dataLines.join("\n")) : null,
+    event: eventLine ? eventLine.slice(6).trim() : "message",
+  };
+}
+
 async function createEncryptionKeys() {
   const [apiPair, requestPair] = await Promise.all([rsaPair(), rsaPair()]);
 
@@ -462,13 +565,13 @@ function sampleDraftPayload() {
     },
     scheme: {
       id: "scheme_smoke",
-      name: "自然口播",
-      description: "整理成一版自然、清楚、可以继续编辑的短口播初稿。",
+      title: "自然口播",
+      content: "整理成一版自然、清楚、可以继续编辑的短口播初稿。",
     },
     laws: [
       {
         id: "law_smoke",
-        name: "像正常说话",
+        title: "像正常说话",
         content: "保留自然语气，不要写得像课程大纲。",
       },
     ],
