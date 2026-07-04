@@ -1,0 +1,61 @@
+name: Deploy Web Production
+
+on:
+  push:
+    tags:
+      - "essai-web-v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing essai-web-v* tag to deploy"
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-web-production-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || github.ref_name }}
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+jobs:
+  deploy:
+    name: Deploy tagged Web/API release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      - name: Validate release tag
+        run: |
+          case "$RELEASE_REF" in
+            essai-web-v*) ;;
+            *)
+              echo "RELEASE_REF must match essai-web-v*; got $RELEASE_REF"
+              exit 1
+              ;;
+          esac
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@54.18.7
+
+      - name: Pull Vercel production environment
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build Web/API
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy Web/API
+        run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
