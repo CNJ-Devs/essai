@@ -5733,7 +5733,7 @@ function FragmentContentEditor({
                 textAlignVertical="top"
                 placeholder={tx("fragmentDetail.editPlaceholder")}
                 placeholderTextColor={colors.muted}
-                style={styles.composeInput}
+                style={[styles.composeInput, styles.fragmentEditInput]}
               />
             </View>
             <View
@@ -8753,6 +8753,9 @@ function createThemedStyles(colors: ThemeColors) {
   composeInputCompact: {
     minHeight: 140,
   },
+  fragmentEditInput: {
+    minHeight: 0,
+  },
   schemeSelectionBlock: {
     flexShrink: 0,
     gap: 10,
@@ -9557,7 +9560,6 @@ function createThemedStyles(colors: ThemeColors) {
     flex: 1,
     fontSize: 15,
     lineHeight: 24,
-    minHeight: 240,
     padding: 14,
   },
   lawDetailCard: {
