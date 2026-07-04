@@ -17,7 +17,8 @@ Options:
   --android-variant <name>   Android Gradle variant: release or debug. Defaults to release.
   --ios-device <value>       iOS device selector. Defaults to the first connected device.
                              Use generic for a build-only simulator app.
-  --no-clean                 Skip clean Expo prebuild before packaging.
+  --clean                    Run clean Expo prebuild before packaging.
+  --no-clean                 Skip clean Expo prebuild before packaging. This is the default.
   -h, --help                 Show this help.
 
 Examples:
@@ -169,7 +170,7 @@ function detectFirstIosDevice() {
 function parseOptions(args) {
   const options = {
     androidVariant: "release",
-    clean: true,
+    clean: false,
     envFile: null,
     iosDevice: null,
   };
@@ -189,6 +190,8 @@ function parseOptions(args) {
       options.androidVariant = variant;
     } else if (arg === "--ios-device") {
       options.iosDevice = readOptionValue(args, ++index, arg);
+    } else if (arg === "--clean") {
+      options.clean = true;
     } else if (arg === "--no-clean") {
       options.clean = false;
     } else {
