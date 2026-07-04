@@ -1,6 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "regions": ["hnd1"],
+  "installCommand": "npm ci --workspace @essai/web --include-workspace-root --no-audit --no-fund && npm --workspace @essai/web run db:generate",
+  "buildCommand": "NEXT_TELEMETRY_DISABLED=1 npx turbo run build --filter=@essai/web",
   "github": {
     "autoAlias": false
   }

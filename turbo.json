@@ -1,5 +1,11 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalPassThroughEnv": [
+    "UPSTASH_REDIS_REST_URL",
+    "UPSTASH_REDIS_REST_TOKEN",
+    "REQUEST_ENCRYPTION_PRIVATE_JWK",
+    "API_KEY_ENCRYPTION_PRIVATE_JWK"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
