@@ -24,15 +24,16 @@ This file records decisions that should survive chat compaction and future sessi
 - Version bump rules while the major version is `0`:
   - `0.x.0` for feature-level Web/API changes or product-contract changes.
   - `0.x.y` for bug fixes, reliability fixes, provider cleanup, copy/prompt tightening, or deployment compatibility fixes.
+  - A new mechanism can still be a patch bump when the product intent is to fix an already-scoped bug or reliability issue rather than add a new user-facing/API-facing feature.
 - Prefer annotated tags for releases.
 - Current Web/API release series:
   - `essai-web-v0.1.0`: monorepo Web UI baseline.
   - `essai-web-v0.1.1`: deployment/font compatibility fix.
   - `essai-web-v0.2.0`: initial generation API backend.
   - `essai-web-v0.3.0`: generation recovery and follow API.
-  - `essai-web-v0.4.0`: duplicate request fingerprint handling.
-  - `essai-web-v0.4.1`: remove mock generation provider.
-  - `essai-web-v0.5.0`: rewrite generation payloads.
+  - `essai-web-v0.3.1`: duplicate ID/request handling finalized.
+  - `essai-web-v0.3.2`: remove mock generation provider.
+  - `essai-web-v0.4.0`: rewrite generation payloads.
 
 ## Mobile Data
 
