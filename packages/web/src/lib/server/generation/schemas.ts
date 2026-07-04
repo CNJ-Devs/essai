@@ -64,11 +64,24 @@ const lawPayloadSchema = z.object({
   content: z.string().trim().min(1),
 });
 
-export const draftPayloadSchema = z.object({
+export const schemeDraftPayloadSchema = z.object({
   fragment: fragmentPayloadSchema,
   scheme: schemePayloadSchema,
   laws: z.array(lawPayloadSchema).default([]),
 });
+export type SchemeDraftPayload = z.infer<typeof schemeDraftPayloadSchema>;
+
+export const rewriteDraftPayloadSchema = z.object({
+  instruction: z.string().trim().min(1),
+  sourceContent: z.string().trim().min(1),
+  sourceVersionId: z.string().trim().min(1),
+});
+export type RewriteDraftPayload = z.infer<typeof rewriteDraftPayloadSchema>;
+
+export const draftPayloadSchema = z.union([
+  schemeDraftPayloadSchema,
+  rewriteDraftPayloadSchema,
+]);
 export type DraftPayload = z.infer<typeof draftPayloadSchema>;
 
 export const titlePayloadSchema = z.object({

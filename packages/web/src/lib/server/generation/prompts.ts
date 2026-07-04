@@ -1,9 +1,17 @@
-import { PROMPT_TEMPLATE_VERSION, buildDraftPrompt } from "@/lib/ai/prompt";
+import {
+  PROMPT_TEMPLATE_VERSION,
+  buildDraftPrompt,
+  buildDraftRevisionPrompt,
+} from "@/lib/ai/prompt";
 import { copy } from "@/lib/i18n";
 import type { Fragment, SchemeSnapshot } from "@/lib/types";
-import type { DraftPayload, TitlePayload } from "./schemas";
+import type { DraftPayload, RewriteDraftPayload, TitlePayload } from "./schemas";
 
 export function buildDraftGenerationPrompt(payload: DraftPayload) {
+  if (isRewriteDraftPayload(payload)) {
+    return buildRewriteGenerationPrompt(payload);
+  }
+
   const now = new Date().toISOString();
   const fragment: Fragment = {
     id: payload.fragment.id || "client-fragment",
@@ -37,6 +45,40 @@ export function buildDraftGenerationPrompt(payload: DraftPayload) {
   };
 }
 
+function buildRewriteGenerationPrompt(payload: RewriteDraftPayload) {
+  const now = new Date().toISOString();
+  const fragment: Fragment = {
+    id: `rewrite-source-${payload.sourceVersionId}`,
+    userId: "local-user",
+    title: "Rewrite source",
+    titleSource: "user",
+    content: payload.sourceContent,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const snapshot: SchemeSnapshot = {
+    schemeId: "rewrite",
+    schemeName: "Rewrite",
+    schemeDescription:
+      "基于当前稿件和用户修改意见，输出一版完整可用的新稿件。",
+    laws: [],
+    snapshottedAt: now,
+  };
+  const prompt = buildDraftRevisionPrompt({
+    currentDraft: payload.sourceContent,
+    fragment,
+    instruction: payload.instruction,
+    snapshot,
+  });
+
+  return {
+    instructions: copy.ai.revisionInstructions,
+    prompt,
+    promptTemplateVersion: PROMPT_TEMPLATE_VERSION,
+    promptChars: prompt.length,
+  };
+}
+
 export function buildTitleGenerationPrompt(payload: TitlePayload) {
   const prompt = copy.ai.titlePrompt(payload.fragment.content);
 
@@ -46,6 +88,10 @@ export function buildTitleGenerationPrompt(payload: TitlePayload) {
     promptTemplateVersion: PROMPT_TEMPLATE_VERSION,
     promptChars: prompt.length,
   };
+}
+
+function isRewriteDraftPayload(payload: DraftPayload): payload is RewriteDraftPayload {
+  return "sourceContent" in payload;
 }
 
 export function normalizeGeneratedTitle(content: string) {
