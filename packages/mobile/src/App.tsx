@@ -69,6 +69,10 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react-native";
+import {
+  GenerationApiConfigurationError,
+  prepareGenerationApiBody as prepareGenerationApiRequestBody,
+} from "./generationCryptoClient";
 
 type Count = 1 | 2 | 3;
 type TabId = "fragments" | "schemes" | "laws" | "more";
@@ -7600,159 +7604,11 @@ function normalizeStableValue(value: unknown): unknown {
 async function prepareGenerationApiBody<T extends Record<string, unknown>>(
   request: T,
 ) {
-  if (isLocalGenerationApiUrl(generationApiBaseUrl)) {
-    return request;
-  }
-
-  const withEncryptedApiKey = await maybeEncryptProviderApiKey(request);
-
-  return maybeEncryptRequestBody(withEncryptedApiKey);
-}
-
-async function maybeEncryptProviderApiKey<T extends Record<string, unknown>>(
-  request: T,
-) {
-  const apiKey = typeof request.apiKey === "string" ? request.apiKey : "";
-  const publicKey = apiKeyEncryptionPublicJwk?.trim();
-
-  if (!apiKey) {
-    return request;
-  }
-
-  assertGenerationEncryptionConfigured(publicKey);
-
-  const encryptedApiKey = await encryptRsaOaepPayload(apiKey, publicKey);
-  const { apiKey: _apiKey, ...rest } = request;
-
-  return {
-    ...rest,
-    encryptedApiKey,
-  };
-}
-
-async function maybeEncryptRequestBody(request: Record<string, unknown>) {
-  const publicKey = requestEncryptionPublicJwk?.trim();
-
-  assertGenerationEncryptionConfigured(publicKey);
-
-  const subtle = globalThis.crypto.subtle;
-  const aesKey = await subtle.generateKey(
-    { length: 256, name: "AES-GCM" },
-    true,
-    ["encrypt", "decrypt"],
-  );
-  const aesRaw = await subtle.exportKey("raw", aesKey);
-  const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await subtle.encrypt(
-    { iv, name: "AES-GCM" },
-    aesKey,
-    new TextEncoder().encode(JSON.stringify(request)),
-  );
-  const encryptedKey = await encryptRsaOaepBytes(aesRaw, publicKey);
-
-  return {
-    encryptedRequest: {
-      alg: "A256GCM+RSA-OAEP-256",
-      ciphertext: bytesToBase64Url(ciphertext),
-      encryptedKey: bytesToBase64Url(encryptedKey),
-      encoding: "base64url",
-      iv: bytesToBase64Url(iv),
-    },
-    schemaVersion: 1,
-  };
-}
-
-function assertGenerationEncryptionConfigured(publicKey?: string) {
-  if (!publicKey || !canUseWebCrypto()) {
-    throw new GenerationApiConfigurationError();
-  }
-}
-
-function isLocalGenerationApiUrl(value: string) {
-  try {
-    const hostname = new URL(value).hostname.toLowerCase();
-
-    return (
-      hostname === "localhost" ||
-      hostname === "127.0.0.1" ||
-      hostname === "::1" ||
-      hostname === "0.0.0.0" ||
-      hostname === "10.0.2.2" ||
-      hostname === "host.docker.internal" ||
-      hostname.endsWith(".local") ||
-      isPrivateIpv4(hostname)
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isPrivateIpv4(hostname: string) {
-  const parts = hostname.split(".").map((part) => Number(part));
-
-  if (
-    parts.length !== 4 ||
-    parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
-  ) {
-    return false;
-  }
-
-  const [first, second] = parts;
-
-  return (
-    first === 10 ||
-    first === 127 ||
-    (first === 172 && second >= 16 && second <= 31) ||
-    (first === 192 && second === 168) ||
-    (first === 169 && second === 254)
-  );
-}
-
-async function encryptRsaOaepPayload(value: string, publicJwk: string) {
-  const ciphertext = await encryptRsaOaepBytes(
-    new TextEncoder().encode(value),
-    publicJwk,
-  );
-
-  return {
-    alg: "RSA-OAEP-256",
-    ciphertext: bytesToBase64Url(ciphertext),
-    encoding: "base64url",
-  };
-}
-
-async function encryptRsaOaepBytes(value: BufferSource, publicJwk: string) {
-  const publicKey = await globalThis.crypto.subtle.importKey(
-    "jwk",
-    JSON.parse(publicJwk) as JsonWebKey,
-    { hash: "SHA-256", name: "RSA-OAEP" },
-    false,
-    ["encrypt"],
-  );
-
-  return globalThis.crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, value);
-}
-
-function canUseWebCrypto() {
-  return Boolean(globalThis.crypto?.subtle && globalThis.crypto.getRandomValues);
-}
-
-function bytesToBase64Url(value: ArrayBuffer | ArrayBufferView) {
-  const bytes =
-    value instanceof ArrayBuffer
-      ? new Uint8Array(value)
-      : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  let binary = "";
-
-  for (let index = 0; index < bytes.length; index += 1) {
-    binary += String.fromCharCode(bytes[index] ?? 0);
-  }
-
-  return globalThis
-    .btoa(binary)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
+  return prepareGenerationApiRequestBody(request, {
+    apiKeyEncryptionPublicJwk,
+    generationApiBaseUrl,
+    requestEncryptionPublicJwk,
+  });
 }
 
 async function postGenerationApi<T>(path: string, body: unknown): Promise<T> {
@@ -7875,12 +7731,6 @@ class GenerationApiRequestError extends Error {
 
     super(apiError?.message ?? "Generation API request failed.");
     this.details = details;
-  }
-}
-
-class GenerationApiConfigurationError extends Error {
-  constructor() {
-    super("Generation encryption is not configured.");
   }
 }
 
