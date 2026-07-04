@@ -28,6 +28,7 @@ import type {
   ViewStyle,
 } from "react-native";
 import {
+  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -75,7 +76,6 @@ type TabId = "fragments" | "schemes" | "laws" | "more";
 type ThemeId = "parchment" | "sage" | "rose" | "sky" | "mint" | "dark";
 type LanguageId = "system" | "zh-Hans" | "en";
 type ProviderId = "openai" | "deepseek" | "anthropic";
-type GenerationProviderId = ProviderId | "mock";
 
 type RootStackParamList = {
   Home: undefined;
@@ -251,7 +251,7 @@ type DraftGenerationTarget = {
 type GenerationService = {
   apiKey?: string;
   model: string;
-  provider: GenerationProviderId;
+  provider: ProviderId;
 };
 
 type GenerationApiRecord = {
@@ -359,6 +359,8 @@ const mobileResources = {
       },
       generation: {
         idConflict: "这次生成任务的 ID 和另一条任务冲突了，请重新出稿。",
+        modelRequired: "先在设置里添加服务密钥并选择模型，再开始出稿。",
+        modelRequiredTitle: "还没有可用模型",
       },
       pages: {
         fragments: {
@@ -609,6 +611,8 @@ const mobileResources = {
       },
       generation: {
         idConflict: "This generation ID conflicts with another task. Please draft again.",
+        modelRequired: "Add a service key and choose a model in Settings before drafting.",
+        modelRequiredTitle: "No model available",
       },
       pages: {
         fragments: {
@@ -983,10 +987,9 @@ const requestEncryptionPublicJwk =
   mobileEnv?.EXPO_PUBLIC_REQUEST_ENCRYPTION_PUBLIC_JWK;
 const apiKeyEncryptionPublicJwk =
   mobileEnv?.EXPO_PUBLIC_API_KEY_ENCRYPTION_PUBLIC_JWK;
-const generationProviderDefaults: Record<GenerationProviderId, string> = {
+const generationProviderDefaults: Record<ProviderId, string> = {
   anthropic: "claude-sonnet-5",
   deepseek: "deepseek-v4-pro",
-  mock: "mock-essai-draft-v1",
   openai: "gpt-5.4-mini",
 };
 const draftGenerationOptions = {
@@ -1266,6 +1269,23 @@ export default function App() {
     });
 
     const service = resolveGenerationService(activeModel, providerKeys);
+
+    if (!service) {
+      showGenerationModelRequired();
+      await Promise.all(
+        targets.map((target) =>
+          updateDraftVersionStatus(target.versionId, {
+            content: tx("generation.modelRequired"),
+            status: "failed",
+          }),
+        ),
+      );
+      targets.forEach((target) => {
+        recoveringGenerationIdsRef.current.delete(target.versionId);
+      });
+      return;
+    }
+
     try {
       const generations = await Promise.all(
         targets.map(async (target) => ({
@@ -1343,6 +1363,9 @@ export default function App() {
 
   async function requestFragmentTitle(fragment: FragmentItem) {
     const service = resolveGenerationService(activeModel, providerKeys);
+
+    if (!service) return;
+
     const id = createId("title");
     const payload = {
       fragment: {
@@ -1429,6 +1452,15 @@ export default function App() {
       if (!item?.selected) return [];
       return [{ scheme, count: item.count }];
     });
+    const generationSchemes =
+      pickedSchemes.length > 0 && !resolveGenerationService(activeModel, providerKeys)
+        ? []
+        : pickedSchemes;
+
+    if (pickedSchemes.length > 0 && generationSchemes.length === 0) {
+      showGenerationModelRequired();
+    }
+
     const fragmentBase = {
       id: createId("fragment"),
       title,
@@ -1436,7 +1468,7 @@ export default function App() {
       createdAt,
       updatedAt: createdAt,
     };
-    const draftPlans = pickedSchemes.map(({ scheme, count }) =>
+    const draftPlans = generationSchemes.map(({ scheme, count }) =>
       createPendingDraftGenerationPlan({
         count,
         fragment: fragmentBase,
@@ -1636,6 +1668,11 @@ export default function App() {
     const fragment = fragments.find((item) => item.id === fragmentId);
 
     if (!fragment) return;
+
+    if (!resolveGenerationService(activeModel, providerKeys)) {
+      showGenerationModelRequired();
+      return;
+    }
 
     const now = new Date().toISOString();
     const safeCount = Math.min(3, Math.max(1, Math.floor(count)));
@@ -7130,12 +7167,9 @@ function getAvailableModels(providerKeys: ProviderKeys): AvailableModelOption[] 
 function resolveGenerationService(
   activeModel: AvailableModelOption | null,
   providerKeys: ProviderKeys,
-): GenerationService {
+): GenerationService | null {
   if (!activeModel) {
-    return {
-      model: generationProviderDefaults.mock,
-      provider: "mock",
-    };
+    return null;
   }
 
   return {
@@ -7143,6 +7177,18 @@ function resolveGenerationService(
     model: getModelNameFromId(activeModel.id),
     provider: activeModel.providerId,
   };
+}
+
+function showGenerationModelRequired() {
+  const title = tx("generation.modelRequiredTitle");
+  const message = tx("generation.modelRequired");
+
+  if (Platform.OS === "web") {
+    globalThis.alert?.(`${title}\n${message}`);
+    return;
+  }
+
+  Alert.alert(title, message);
 }
 
 function getModelNameFromId(modelId: string) {
@@ -7160,7 +7206,7 @@ async function buildDraftRequestFingerprint({
   model: string;
   options: typeof draftGenerationOptions;
   payload: DraftGenerationPayload;
-  provider: GenerationProviderId;
+  provider: ProviderId;
 }) {
   return requestFingerprint({
     generation: {
@@ -7187,7 +7233,7 @@ async function buildTitleRequestFingerprint({
   model: string;
   options: typeof titleGenerationOptions;
   payload: { fragment: { content: string; id: string } };
-  provider: GenerationProviderId;
+  provider: ProviderId;
 }) {
   return requestFingerprint({
     id,

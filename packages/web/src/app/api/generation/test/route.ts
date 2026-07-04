@@ -17,11 +17,11 @@ const DEFAULT_TIMEOUT_MS = MAX_TIMEOUT_MS;
 const FINALIZATION_RESERVE_MS = 15_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 1800;
 
-const providerSchema = z.enum(["mock", "openai", "deepseek", "anthropic"]);
+const providerSchema = z.enum(["openai", "deepseek", "anthropic"]);
 type Provider = z.infer<typeof providerSchema>;
 
 const requestSchema = z.object({
-  provider: providerSchema.default("mock"),
+  provider: providerSchema.default("openai"),
   apiKey: z.string().trim().optional(),
   model: z.string().trim().optional(),
   fragment: z.object({
@@ -57,16 +57,9 @@ const requestSchema = z.object({
   temperature: z.number().min(0).max(2).optional(),
   reasoningEffort: z.enum(["none", "low", "medium", "high", "xhigh"]).optional(),
   debug: z.boolean().default(false),
-  mock: z
-    .object({
-      delayMs: z.number().int().min(0).max(MAX_TIMEOUT_MS).default(0),
-      fail: z.boolean().default(false),
-    })
-    .default({ delayMs: 0, fail: false }),
 });
 
 const providerDefaults: Record<Provider, string> = {
-  mock: "mock-essai-draft-v1",
   openai: "gpt-5.4-mini",
   deepseek: "deepseek-v4-pro",
   anthropic: "claude-sonnet-5",
@@ -86,9 +79,6 @@ export async function GET() {
       finalizationReserveMs: FINALIZATION_RESERVE_MS,
     },
     providers: {
-      mock: {
-        description: "Local fake provider for timeout and shape testing.",
-      },
       openai: {
         defaultModel: providerDefaults.openai,
         recommendedUpgrade: "gpt-5.4",
@@ -127,34 +117,19 @@ export async function POST(request: Request) {
     const instructions = copy.ai.draftInstructions;
     const apiKey = getApiKey(request, input.provider, input.apiKey);
 
-    const result =
-      input.provider === "mock"
-        ? await runWithTimeout(
-            (signal) =>
-              callMockProvider({
-                delayMs: input.mock.delayMs,
-                fail: input.mock.fail,
-                fragment,
-                model,
-                signal,
-                snapshot,
-              }),
-            budget.providerTimeoutMs,
-            budget.providerTimeoutMessage,
-          )
-        : await runWithTimeout(
-            (signal) =>
-              callProvider({
-                apiKey,
-                input,
-                instructions,
-                model,
-                prompt,
-                signal,
-              }),
-            budget.providerTimeoutMs,
-            budget.providerTimeoutMessage,
-          );
+    const result = await runWithTimeout(
+      (signal) =>
+        callProvider({
+          apiKey,
+          input,
+          instructions,
+          model,
+          prompt,
+          signal,
+        }),
+      budget.providerTimeoutMs,
+      budget.providerTimeoutMessage,
+    );
 
     assertBudgetRemaining(budget);
 
@@ -248,10 +223,6 @@ function buildPromptInput(input: z.infer<typeof requestSchema>) {
 }
 
 function getApiKey(request: Request, provider: Provider, bodyApiKey?: string) {
-  if (provider === "mock") {
-    return "";
-  }
-
   const auth = request.headers.get("authorization");
   const bearer = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   const headerKey = request.headers.get("x-provider-api-key")?.trim();
@@ -428,50 +399,6 @@ async function callAnthropic({
   return {
     content: extractAnthropicText(data),
     usage: data.usage,
-  };
-}
-
-async function callMockProvider({
-  delayMs,
-  fail,
-  fragment,
-  model,
-  signal,
-  snapshot,
-}: {
-  delayMs: number;
-  fail: boolean;
-  fragment: Fragment;
-  model: string;
-  signal: AbortSignal;
-  snapshot: SchemeSnapshot;
-}) {
-  await sleep(delayMs, signal);
-
-  if (fail) {
-    throw new ProviderRequestError(
-      "mock_failed",
-      "Mock provider was asked to fail.",
-      500,
-    );
-  }
-
-  return {
-    content: [
-      "标题建议",
-      fragment.title,
-      "",
-      "内容定位",
-      `这是一版基于「${snapshot.schemeName}」整理出的测试初稿。`,
-      "",
-      "正文成稿",
-      fragment.content,
-    ].join("\n"),
-    usage: {
-      input_tokens: 0,
-      output_tokens: 0,
-      model,
-    },
   };
 }
 

@@ -8,7 +8,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
 const providerDefaults = {
-  mock: "mock-essai-draft-v1",
   openai: "gpt-5.4-mini",
   deepseek: "deepseek-v4-pro",
   anthropic: "claude-sonnet-5",
@@ -27,9 +26,8 @@ async function main() {
   const providers = collectProviders(args);
 
   if (providers.length === 0) {
-    console.log("No provider keys found. The script will only run mock tests.");
-    console.log(
-      "Pass keys with --openai-key, --deepseek-key, --anthropic-key, or matching env vars.",
+    throw new Error(
+      "No provider keys found. Pass keys with --openai-key, --deepseek-key, --anthropic-key, or matching env vars.",
     );
   }
 
@@ -45,7 +43,6 @@ async function main() {
 
   try {
     console.log(`Generation API smoke server: ${baseUrl}`);
-    await runMockSuite({ baseUrl, keys });
 
     for (const provider of providers) {
       await runProviderSuite({ baseUrl, keys, provider });
@@ -55,169 +52,6 @@ async function main() {
   } finally {
     server.kill();
   }
-}
-
-async function runMockSuite({ baseUrl, keys }) {
-  const generationId = `smoke_mock_${Date.now()}`;
-  const titleId = `smoke_title_mock_${Date.now()}`;
-  const generationOptions = {
-    maxOutputTokens: 256,
-  };
-  const generationPayload = sampleDraftPayload();
-  const generationInput = withDraftFingerprint({
-    id: generationId,
-    options: generationOptions,
-    payload: generationPayload,
-    provider: "mock",
-  });
-
-  console.log("\n[mock] encrypted generation");
-  const generation = await postJson(
-    baseUrl,
-    "/api/generations",
-    await encryptRequest(keys, {
-      provider: "mock",
-      generations: [generationInput],
-      options: generationOptions,
-    }),
-  );
-  assert(generation.ok, "mock generation returned ok=false", generation);
-  assert(
-    generation.records?.[0]?.status === "succeeded",
-    "mock generation did not succeed",
-    generation,
-  );
-  assert(
-    typeof generation.records?.[0]?.output?.content === "string",
-    "mock generation returned no content",
-    generation,
-  );
-
-  console.log("[mock] duplicate generation id");
-  const duplicateGeneration = await postJsonExpectError(
-    baseUrl,
-    "/api/generations",
-    await encryptRequest(keys, {
-      provider: "mock",
-      generations: [
-        {
-          id: generationId,
-          payload: generationPayload,
-          requestFingerprint: generationInput.requestFingerprint,
-        },
-      ],
-      options: generationOptions,
-    }),
-    409,
-  );
-  assert(
-    duplicateGeneration.error?.code === "generation_request_exists",
-    "duplicate generation id with the same fingerprint was not classified as an existing request",
-    duplicateGeneration,
-  );
-
-  console.log("[mock] conflicting generation id");
-  const conflictingPayload = sampleDraftPayload({
-    content: "这是另一个不同的请求，用来确认相同 ID 但不同指纹会被当成冲突。",
-  });
-  const conflictingInput = withDraftFingerprint({
-    id: generationId,
-    options: generationOptions,
-    payload: conflictingPayload,
-    provider: "mock",
-  });
-  const conflictingGeneration = await postJsonExpectError(
-    baseUrl,
-    "/api/generations",
-    await encryptRequest(keys, {
-      provider: "mock",
-      generations: [conflictingInput],
-      options: generationOptions,
-    }),
-    409,
-  );
-  assert(
-    conflictingGeneration.error?.code === "generation_id_conflict",
-    "duplicate generation id with a different fingerprint was not rejected as a conflict",
-    conflictingGeneration,
-  );
-
-  console.log("[mock] encrypted title");
-  const titlePayload = {
-    fragment: {
-      id: "fragment_smoke",
-      content: "给这条碎片自动生成一个标题。",
-    },
-  };
-  const titleOptions = {
-    maxOutputTokens: 96,
-  };
-  const title = await postJson(
-    baseUrl,
-    "/api/generation-title",
-    await encryptRequest(keys, {
-      id: titleId,
-      requestFingerprint: titleFingerprint({
-        id: titleId,
-        options: titleOptions,
-        payload: titlePayload,
-        provider: "mock",
-      }),
-      provider: "mock",
-      payload: titlePayload,
-      options: titleOptions,
-    }),
-  );
-  assert(title.ok, "mock title returned ok=false", title);
-  assert(title.record?.status === "succeeded", "mock title did not succeed", title);
-
-  console.log("[mock] pull");
-  const pulled = await postJson(baseUrl, "/api/generations/pull", {
-    ids: [generationId, titleId, "smoke_missing"],
-  });
-  assert(pulled.ok, "pull returned ok=false", pulled);
-  assert(
-    pulled.records?.length === 2 && pulled.missing?.length === 1,
-    "pull did not return expected records/missing ids",
-    pulled,
-  );
-
-  console.log("[mock] follow");
-  const followed = await getSseEvents(
-    baseUrl,
-    `/api/generations/follow?ids=${generationId},${titleId},smoke_missing&intervalMs=500`,
-  );
-  assert(
-    followed.some(
-      (event) =>
-        event.event === "generation.record" &&
-        event.data?.record?.id === generationId &&
-        event.data.record.status === "succeeded",
-    ),
-    "follow did not emit succeeded generation record",
-    followed,
-  );
-  assert(
-    followed.some(
-      (event) =>
-        event.event === "generation.expired" &&
-        event.data?.id === "smoke_missing",
-    ),
-    "follow did not emit expired missing id",
-    followed,
-  );
-  assert(
-    followed.some((event) => event.event === "generation.done"),
-    "follow did not complete",
-    followed,
-  );
-
-  console.log("[mock] cleanup");
-  const cleaned = await postJson(baseUrl, "/api/generations/cleanup", {
-    ids: [generationId, titleId],
-  });
-  assert(cleaned.ok, "cleanup returned ok=false", cleaned);
-  assert(cleaned.deletedCount === 2, "cleanup deleted unexpected count", cleaned);
 }
 
 async function runProviderSuite({ baseUrl, keys, provider }) {
@@ -260,6 +94,52 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
       generation.records[0].output.content.length > 0,
     `${provider.name} generation returned no content`,
     generation,
+  );
+
+  console.log(`[${provider.name}] duplicate generation id`);
+  const duplicateGeneration = await postJsonExpectError(
+    baseUrl,
+    "/api/generations",
+    await encryptRequest(keys, {
+      provider: provider.name,
+      model,
+      generations: [generationInput],
+      options: generationOptions,
+    }),
+    409,
+  );
+  assert(
+    duplicateGeneration.error?.code === "generation_request_exists",
+    "duplicate generation id with the same fingerprint was not classified as an existing request",
+    duplicateGeneration,
+  );
+
+  console.log(`[${provider.name}] conflicting generation id`);
+  const conflictingPayload = sampleDraftPayload({
+    content: "这是另一个不同的请求，用来确认相同 ID 但不同指纹会被当成冲突。",
+  });
+  const conflictingInput = withDraftFingerprint({
+    id: generationId,
+    model,
+    options: generationOptions,
+    payload: conflictingPayload,
+    provider: provider.name,
+  });
+  const conflictingGeneration = await postJsonExpectError(
+    baseUrl,
+    "/api/generations",
+    await encryptRequest(keys, {
+      provider: provider.name,
+      model,
+      generations: [conflictingInput],
+      options: generationOptions,
+    }),
+    409,
+  );
+  assert(
+    conflictingGeneration.error?.code === "generation_id_conflict",
+    "duplicate generation id with a different fingerprint was not rejected as a conflict",
+    conflictingGeneration,
   );
 
   console.log(`[${provider.name}] pull generation`);
@@ -307,11 +187,42 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
   assert(title.record?.status === "succeeded", `${provider.name} title did not succeed`, title);
   assert(typeof title.title === "string" && title.title.length > 0, "title is empty", title);
 
+  console.log(`[${provider.name}] follow`);
+  const followed = await getSseEvents(
+    baseUrl,
+    `/api/generations/follow?ids=${generationId},${titleId},smoke_missing&intervalMs=500`,
+  );
+  assert(
+    followed.some(
+      (event) =>
+        event.event === "generation.record" &&
+        event.data?.record?.id === generationId &&
+        event.data.record.status === "succeeded",
+    ),
+    "follow did not emit succeeded generation record",
+    followed,
+  );
+  assert(
+    followed.some(
+      (event) =>
+        event.event === "generation.expired" &&
+        event.data?.id === "smoke_missing",
+    ),
+    "follow did not emit expired missing id",
+    followed,
+  );
+  assert(
+    followed.some((event) => event.event === "generation.done"),
+    "follow did not complete",
+    followed,
+  );
+
   console.log(`[${provider.name}] cleanup`);
   const cleaned = await postJson(baseUrl, "/api/generations/cleanup", {
     ids: [generationId, titleId],
   });
   assert(cleaned.ok, `${provider.name} cleanup returned ok=false`, cleaned);
+  assert(cleaned.deletedCount === 2, "cleanup deleted unexpected count", cleaned);
 }
 
 async function startServer({ keys, port }) {

@@ -13,10 +13,6 @@ export async function resolveProviderApiKey({
   provider: Provider;
   request: Request;
 }) {
-  if (provider === "mock") {
-    return "";
-  }
-
   if (encryptedApiKey) {
     return decryptApiKey(encryptedApiKey);
   }

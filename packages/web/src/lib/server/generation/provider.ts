@@ -17,7 +17,6 @@ export async function callGenerationProvider({
   apiKey,
   budget,
   instructions,
-  mock,
   model,
   options,
   prompt,
@@ -26,10 +25,6 @@ export async function callGenerationProvider({
   apiKey: string;
   budget: ExecutionBudget;
   instructions: string;
-  mock?: {
-    delayMs?: number;
-    fail?: boolean;
-  };
   model: string;
   options: ProviderOptions;
   prompt: string;
@@ -37,16 +32,6 @@ export async function callGenerationProvider({
 }) {
   return runWithTimeout(
     (signal) => {
-      if (provider === "mock") {
-        return callMockProvider({
-          delayMs: mock?.delayMs ?? 0,
-          fail: mock?.fail ?? false,
-          model,
-          prompt,
-          signal,
-        });
-      }
-
       switch (provider) {
         case "openai":
           return callOpenAI({
@@ -196,49 +181,6 @@ async function callAnthropic({
   return {
     content: extractAnthropicText(data),
     usage: extractUsage(data),
-  };
-}
-
-async function callMockProvider({
-  delayMs,
-  fail,
-  model,
-  prompt,
-  signal,
-}: {
-  delayMs: number;
-  fail: boolean;
-  model: string;
-  prompt: string;
-  signal: AbortSignal;
-}) {
-  await sleep(delayMs, signal);
-
-  if (fail) {
-    throw new GenerationRequestError(
-      "mock_failed",
-      "Mock provider was asked to fail.",
-      500,
-      500,
-    );
-  }
-
-  return {
-    content: [
-      "标题建议",
-      "这是一版测试稿",
-      "",
-      "内容定位",
-      "这是 mock provider 返回的测试结果，用来验证接口形状和状态流转。",
-      "",
-      "正文成稿",
-      prompt.slice(0, 1200),
-    ].join("\n"),
-    usage: {
-      input_tokens: 0,
-      output_tokens: 0,
-      model,
-    },
   };
 }
 

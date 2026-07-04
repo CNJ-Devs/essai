@@ -3,7 +3,7 @@ import { z } from "zod";
 export const generationSchemaVersion = 1;
 export const generationTtlSeconds = 7 * 24 * 60 * 60;
 
-export const providerSchema = z.enum(["mock", "openai", "deepseek", "anthropic"]);
+export const providerSchema = z.enum(["openai", "deepseek", "anthropic"]);
 export type Provider = z.infer<typeof providerSchema>;
 
 export const generationKindSchema = z.enum(["draft", "title"]);
@@ -85,7 +85,7 @@ export const generationInputSchema = z.object({
 export type GenerationInput = z.infer<typeof generationInputSchema>;
 
 export const generationCreateRequestSchema = z.object({
-  provider: providerSchema.default("mock"),
+  provider: providerSchema,
   apiKey: z.string().trim().optional(),
   encryptedApiKey: encryptedApiKeySchema.optional(),
   model: z.string().trim().optional(),
@@ -114,7 +114,7 @@ export type GenerationFollowRequest = z.infer<typeof generationFollowRequestSche
 export const titleCreateRequestSchema = z.object({
   id: z.string().trim().min(1),
   requestFingerprint: requestFingerprintSchema.optional(),
-  provider: providerSchema.default("mock"),
+  provider: providerSchema,
   apiKey: z.string().trim().optional(),
   encryptedApiKey: encryptedApiKeySchema.optional(),
   model: z.string().trim().optional(),
@@ -162,7 +162,6 @@ export type GenerationRecord = {
 };
 
 export const providerDefaults: Record<Provider, string> = {
-  mock: "mock-essai-draft-v1",
   openai: "gpt-5.4-mini",
   deepseek: "deepseek-v4-pro",
   anthropic: "claude-sonnet-5",
