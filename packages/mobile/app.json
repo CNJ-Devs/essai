@@ -8,10 +8,14 @@
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.cnjdevs.essai"
     },
     "web": {
       "bundler": "metro"
+    },
+    "android": {
+      "package": "com.cnjdevs.essai"
     }
   }
 }
