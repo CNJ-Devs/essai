@@ -22,12 +22,13 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import Carousel, { type ICarouselInstance } from "react-native-reanimated-carousel";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import type {
+  KeyboardEvent,
   StyleProp,
   ViewStyle,
 } from "react-native";
 import {
   Alert,
-  KeyboardAvoidingView,
+  Keyboard,
   Modal,
   Platform,
   Pressable,
@@ -103,11 +104,6 @@ const androidSystemBarModalProps =
         statusBarTranslucent: true,
       } as const)
     : {};
-const modalKeyboardAvoidingBehavior = Platform.select({
-  android: "height" as const,
-  default: undefined,
-  ios: "padding" as const,
-});
 
 type Scheme = {
   id: string;
@@ -2589,9 +2585,11 @@ function StackScreenSurface({ children }: { children: ReactNode }) {
 
 function useStackDetailPadding(extraBottom = 0) {
   const insets = useSafeAreaInsets();
+  const keyboardHeight = useKeyboardHeight();
+  const safeBottom = keyboardHeight > 0 ? 0 : insets.bottom;
 
   return {
-    paddingBottom: 28 + insets.bottom + extraBottom,
+    paddingBottom: 28 + safeBottom + extraBottom,
     paddingLeft: 18 + insets.left,
     paddingRight: 18 + insets.right,
   };
@@ -2609,6 +2607,7 @@ function DetailScrollView({
   return (
     <ScrollView
       style={styles.detailScroll}
+      automaticallyAdjustKeyboardInsets
       contentContainerStyle={[styles.detailInner, detailPadding]}
       keyboardShouldPersistTaps={keyboardShouldPersistTaps}
       showsVerticalScrollIndicator={false}
@@ -2628,6 +2627,88 @@ function useFormTextAreaHeight(scale: number, min: number, max: number) {
   const { height: windowHeight } = useWindowDimensions();
 
   return Math.round(Math.min(max, Math.max(min, windowHeight * scale)));
+}
+
+function useKeyboardHeight() {
+  const { height: windowHeight } = useWindowDimensions();
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  useEffect(() => {
+    function updateHeight(event: KeyboardEvent) {
+      const screenY = event.endCoordinates?.screenY;
+      const nextHeight =
+        typeof screenY === "number"
+          ? Math.max(0, windowHeight - screenY)
+          : (event.endCoordinates?.height ?? 0);
+
+      setKeyboardHeight(Math.round(nextHeight));
+    }
+
+    function resetHeight() {
+      setKeyboardHeight(0);
+    }
+
+    const subscriptions =
+      Platform.OS === "ios"
+        ? [
+            Keyboard.addListener("keyboardWillChangeFrame", updateHeight),
+            Keyboard.addListener("keyboardWillHide", resetHeight),
+          ]
+        : [
+            Keyboard.addListener("keyboardDidShow", updateHeight),
+            Keyboard.addListener("keyboardDidHide", resetHeight),
+          ];
+
+    return () => {
+      subscriptions.forEach((subscription) => subscription.remove());
+    };
+  }, [windowHeight]);
+
+  return keyboardHeight;
+}
+
+function useFloatingActionBottom(gap = 14) {
+  const insets = useSafeAreaInsets();
+  const keyboardHeight = useKeyboardHeight();
+  const safeAreaBottom = insets.bottom;
+  const restingBottom = safeAreaBottom + gap;
+  const floatingBottom =
+    keyboardHeight > 0 ? keyboardHeight + gap : restingBottom;
+
+  return { floatingBottom, keyboardHeight, restingBottom, safeAreaBottom };
+}
+
+function useFloatingActionLayout(gap = 14) {
+  const {
+    floatingBottom,
+    keyboardHeight,
+    restingBottom,
+    safeAreaBottom,
+  } = useFloatingActionBottom(gap);
+  const buttonHeight = 42;
+  const scrollGap = 18;
+  const activeBottom = keyboardHeight > 0 ? gap : restingBottom;
+  const restingScrollBottomPadding = restingBottom + buttonHeight + scrollGap;
+
+  return {
+    floatingButtonBottom: floatingBottom,
+    fullHeightInputBottomPadding:
+      keyboardHeight > 0
+        ? restingScrollBottomPadding + keyboardHeight - safeAreaBottom
+        : restingScrollBottomPadding,
+    keyboardHeight,
+    restingScrollBottomPadding,
+    scrollBottomPadding: activeBottom + buttonHeight + scrollGap,
+  };
+}
+
+function useCenterModalOverlayStyle() {
+  const keyboardHeight = useKeyboardHeight();
+
+  return [
+    styles.centerModalOverlay,
+    keyboardHeight > 0 ? { paddingBottom: keyboardHeight + 24 } : null,
+  ];
 }
 
 function ReadonlyContentBox({
@@ -3629,8 +3710,12 @@ function ComposeSheet({
   const [contentFrameHeight, setContentFrameHeight] = useState(0);
   const [schemeSelectionHeight, setSchemeSelectionHeight] = useState(0);
   const insets = useSafeAreaInsets();
-  const floatingButtonBottom = insets.bottom + 14;
-  const scrollBottomPadding = floatingButtonBottom + 42 + 18;
+  const {
+    floatingButtonBottom,
+    keyboardHeight,
+    restingScrollBottomPadding,
+    scrollBottomPadding,
+  } = useFloatingActionLayout();
   const composeInputMinHeight = 140;
   const composeFormGap = 18;
   const composeInputHeight =
@@ -3638,11 +3723,21 @@ function ComposeSheet({
       ? Math.max(
           composeInputMinHeight,
           contentFrameHeight -
-            scrollBottomPadding -
+            restingScrollBottomPadding -
             schemeSelectionHeight -
             composeFormGap,
         )
       : composeInputMinHeight;
+  const composeScrollMinHeight =
+    contentFrameHeight > 0
+      ? Math.max(
+          0,
+          contentFrameHeight -
+            (keyboardHeight > 0
+              ? restingScrollBottomPadding - scrollBottomPadding
+              : 0),
+        )
+      : contentFrameHeight;
   const canSubmit = content.trim().length > 0;
 
   useEffect(() => {
@@ -3699,10 +3794,7 @@ function ComposeSheet({
       visible={visible}
       onRequestClose={onClose}
     >
-      <KeyboardAvoidingView
-        behavior={modalKeyboardAvoidingBehavior}
-        style={styles.modalShell}
-      >
+      <View style={styles.modalShell}>
         <SafeAreaView
           edges={["right", "left"]}
           style={[
@@ -3723,11 +3815,12 @@ function ComposeSheet({
             }
           >
             <ScrollView
+              automaticallyAdjustKeyboardInsets
               style={styles.composeScroll}
               contentContainerStyle={[
                 styles.composeScrollContent,
                 {
-                  minHeight: contentFrameHeight,
+                  minHeight: composeScrollMinHeight,
                   paddingBottom: scrollBottomPadding,
                 },
               ]}
@@ -3783,7 +3876,7 @@ function ComposeSheet({
             </View>
           </View>
         </SafeAreaView>
-      </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 }
@@ -3922,8 +4015,10 @@ function SchemeEditor({
   const insets = useSafeAreaInsets();
   const descriptionInputHeight = useFormTextAreaHeight(0.18, 128, 220);
   const quickLawInputHeight = useFormTextAreaHeight(0.14, 104, 168);
-  const floatingButtonBottom = insets.bottom + 14;
-  const scrollBottomPadding = floatingButtonBottom + 42 + 18;
+  const {
+    floatingButtonBottom,
+    scrollBottomPadding,
+  } = useFloatingActionLayout();
   const canSubmit = description.trim().length > 0;
   const canCreateLaw =
     quickLawName.trim().length > 0 && quickLawContent.trim().length > 0;
@@ -4006,6 +4101,7 @@ function SchemeEditor({
           />
           <View style={styles.modalContentFrame}>
           <ScrollView
+            automaticallyAdjustKeyboardInsets
             style={styles.modalScroll}
             contentContainerStyle={[
               styles.formStack,
@@ -4195,8 +4291,10 @@ function LawEditor({
   const [tags, setTags] = useState<string[]>(initialLaw?.tags ?? []);
   const insets = useSafeAreaInsets();
   const contentInputHeight = useFormTextAreaHeight(0.24, 150, 280);
-  const floatingButtonBottom = insets.bottom + 14;
-  const scrollBottomPadding = floatingButtonBottom + 42 + 18;
+  const {
+    floatingButtonBottom,
+    scrollBottomPadding,
+  } = useFloatingActionLayout();
   const canSubmit = name.trim().length > 0 && content.trim().length > 0;
 
   useEffect(() => {
@@ -4233,6 +4331,7 @@ function LawEditor({
           />
           <View style={styles.modalContentFrame}>
           <ScrollView
+            automaticallyAdjustKeyboardInsets
             style={styles.modalScroll}
             contentContainerStyle={[
               styles.formStack,
@@ -4305,6 +4404,7 @@ function TagEditor({
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  const centerModalOverlayStyle = useCenterModalOverlayStyle();
 
   function close() {
     setOpen(false);
@@ -4355,7 +4455,7 @@ function TagEditor({
         transparent
         visible={open}
       >
-        <View style={styles.centerModalOverlay}>
+        <View style={centerModalOverlayStyle}>
           <View style={styles.centerModalCard}>
             <Text style={styles.centerModalTitle}>
               {tx("lawEditor.addTagTitle")}
@@ -4651,6 +4751,12 @@ function DraftDetail({
   const carouselReady = carouselFrame.width > 0 && carouselFrame.height > 0;
   const carouselCardWidth = Math.max(260, carouselFrame.width - 24);
   const detailPadding = useStackDetailPadding();
+  const centerModalOverlayStyle = useCenterModalOverlayStyle();
+  const rewriteKeyboardHeight = useKeyboardHeight();
+  const rewriteDrawerBottomPadding =
+    rewriteKeyboardHeight > 0
+      ? rewriteKeyboardHeight + 14
+      : Math.max(insets.bottom, 10) + 14;
 
   useEffect(() => {
     setActiveVersionId(latest?.id ?? null);
@@ -5075,7 +5181,7 @@ function DraftDetail({
         transparent
         visible={jumpOpen}
       >
-        <View style={styles.centerModalOverlay}>
+        <View style={centerModalOverlayStyle}>
           <View style={styles.centerModalCard}>
             <Text style={styles.centerModalTitle}>
               {tx("pages.drafts.jumpTitle")}
@@ -5273,10 +5379,7 @@ function DraftDetail({
         transparent
         visible={editVersionOpen}
       >
-        <KeyboardAvoidingView
-          behavior={modalKeyboardAvoidingBehavior}
-          style={styles.centerModalOverlay}
-        >
+        <View style={centerModalOverlayStyle}>
           <View style={[styles.centerModalCard, styles.versionEditorCard]}>
             <Text style={styles.centerModalTitle}>
               {tx("pages.drafts.editTitle")}
@@ -5313,7 +5416,7 @@ function DraftDetail({
               </Pressable>
             </View>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
       <Modal
         {...androidSystemBarModalProps}
@@ -5322,10 +5425,7 @@ function DraftDetail({
         presentationStyle="pageSheet"
         visible={rewriteOpen}
       >
-        <KeyboardAvoidingView
-          behavior={modalKeyboardAvoidingBehavior}
-          style={styles.modalShell}
-        >
+        <View style={styles.modalShell}>
           <SafeAreaView
             edges={["right", "left"]}
             style={[
@@ -5342,7 +5442,7 @@ function DraftDetail({
               <View
                 style={[
                   styles.rewriteDrawerBody,
-                  { paddingBottom: Math.max(insets.bottom, 10) + 14 },
+                  { paddingBottom: rewriteDrawerBottomPadding },
                 ]}
               >
                 <View style={styles.rewriteSourceCard}>
@@ -5395,7 +5495,7 @@ function DraftDetail({
               </View>
             </View>
           </SafeAreaView>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
       <ConfirmDialog
         confirmLabel={tx("actions.delete")}
@@ -5422,8 +5522,10 @@ function FragmentContentEditor({
 }) {
   const [content, setContent] = useState(fragment.content);
   const insets = useSafeAreaInsets();
-  const floatingButtonBottom = insets.bottom + 14;
-  const scrollBottomPadding = floatingButtonBottom + 42 + 18;
+  const {
+    floatingButtonBottom,
+    fullHeightInputBottomPadding,
+  } = useFloatingActionLayout();
   const canSubmit = content.trim().length > 0;
 
   useEffect(() => {
@@ -5440,10 +5542,7 @@ function FragmentContentEditor({
       visible={visible}
       onRequestClose={onClose}
     >
-      <KeyboardAvoidingView
-        behavior={modalKeyboardAvoidingBehavior}
-        style={styles.modalShell}
-      >
+      <View style={styles.modalShell}>
         <SafeAreaView
           edges={["right", "left"]}
           style={[
@@ -5460,7 +5559,7 @@ function FragmentContentEditor({
             <View
               style={[
                 styles.draftEditBody,
-                { paddingBottom: scrollBottomPadding },
+                { paddingBottom: fullHeightInputBottomPadding },
               ]}
             >
               <TextInput
@@ -5493,7 +5592,7 @@ function FragmentContentEditor({
             </View>
           </View>
         </SafeAreaView>
-      </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 }
@@ -5513,8 +5612,10 @@ function DraftGenerateSheet({
     createDefaultSchemeSelection(schemes),
   );
   const insets = useSafeAreaInsets();
-  const floatingButtonBottom = insets.bottom + 14;
-  const scrollBottomPadding = floatingButtonBottom + 42 + 18;
+  const {
+    floatingButtonBottom,
+    scrollBottomPadding,
+  } = useFloatingActionLayout();
   const canSubmit = Object.values(selection).some((item) => item.selected);
 
   useEffect(() => {
@@ -5872,7 +5973,11 @@ function ModalHeader({
   onClose: () => void;
 }) {
   return (
-    <View style={styles.modalHeader}>
+    <Pressable
+      accessible={false}
+      style={styles.modalHeader}
+      onPress={Keyboard.dismiss}
+    >
       <View style={styles.modalHeaderText}>
         <Text style={styles.modalTitle}>{title}</Text>
         <Text style={styles.modalDescription}>{description}</Text>
@@ -5880,7 +5985,7 @@ function ModalHeader({
       <Pressable style={styles.closeButton} onPress={onClose}>
         <Text style={styles.closeButtonText}>{tx("actions.close")}</Text>
       </Pressable>
-    </View>
+    </Pressable>
   );
 }
 
