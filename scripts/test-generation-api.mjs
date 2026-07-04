@@ -89,7 +89,7 @@ async function runMockSuite({ baseUrl, keys }) {
   );
 
   console.log("[mock] duplicate generation id");
-  const duplicateGeneration = await postJson(
+  const duplicateGeneration = await postJsonExpectError(
     baseUrl,
     "/api/generations",
     await encryptRequest(keys, {
@@ -104,11 +104,11 @@ async function runMockSuite({ baseUrl, keys }) {
         maxOutputTokens: 256,
       },
     }),
+    409,
   );
   assert(
-    duplicateGeneration.records?.[0]?.id === generationId &&
-      duplicateGeneration.records[0].status === "succeeded",
-    "duplicate generation id did not return the existing record",
+    duplicateGeneration.error?.code === "generation_id_conflict",
+    "duplicate generation id was not rejected as a conflict",
     duplicateGeneration,
   );
 
@@ -354,6 +354,27 @@ async function postJson(baseUrl, path, body) {
 
   if (!response.ok) {
     throw withDetails(`POST ${path} failed with ${response.status}`, data);
+  }
+
+  return data;
+}
+
+async function postJsonExpectError(baseUrl, path, body, expectedStatus) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  const data = parseJson(text);
+
+  if (response.status !== expectedStatus) {
+    throw withDetails(
+      `POST ${path} expected ${expectedStatus} but got ${response.status}`,
+      data,
+    );
   }
 
   return data;

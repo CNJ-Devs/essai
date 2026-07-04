@@ -51,22 +51,11 @@ export async function POST(request: Request) {
     const existingRecord = await getGenerationRecord(input.id);
 
     if (existingRecord) {
-      if (existingRecord.kind !== "title") {
-        return jsonError({
-          code: "generation_id_conflict",
-          message: `Generation id already exists for kind: ${existingRecord.kind}.`,
-          status: 409,
-          startedAt,
-        });
-      }
-
-      return Response.json({
-        ok: existingRecord.status === "succeeded",
-        id: input.id,
-        title: existingRecord.title,
-        record: existingRecord,
-        store: getGenerationStoreMode(),
-        durationMs: Date.now() - startedAt,
+      return jsonError({
+        code: "generation_id_conflict",
+        message: `Generation id already exists: ${input.id}.`,
+        status: 409,
+        startedAt,
       });
     }
 

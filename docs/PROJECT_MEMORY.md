@@ -52,6 +52,7 @@ This file records decisions that should survive chat compaction and future sessi
   - `succeeded`
   - `failed`
 - Backend should not expose or persist `queued` for the current phase.
+- A generation id is unique across the backend cache. Duplicate create requests for the same id should be rejected with a conflict; clients should use SSE follow or pull to recover state instead of resubmitting the same id.
 - Redis TTL is the result cache window, currently 7 days.
 - Each generation record also needs a `deadlineAt`.
 - If a record exists but is still non-terminal after `deadlineAt`, treat it as timeout failure.

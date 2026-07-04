@@ -52,20 +52,28 @@ export async function POST(request: Request) {
         generation,
       })),
     );
-    const hasNewGenerations = preparedGenerations.some(
-      (item) => !item.existingRecord,
+    const conflictIds = preparedGenerations.flatMap((item) =>
+      item.existingRecord ? [item.generation.id] : [],
     );
-    const apiKey = hasNewGenerations
-      ? await resolveProviderApiKey({
-          explicitApiKey: input.apiKey,
-          encryptedApiKey: input.encryptedApiKey,
-          provider: input.provider,
-          request,
-        })
-      : "";
+
+    if (conflictIds.length > 0) {
+      return jsonError({
+        code: "generation_id_conflict",
+        message: `Generation id already exists: ${conflictIds.join(", ")}.`,
+        status: 409,
+        startedAt,
+      });
+    }
+
+    const apiKey = await resolveProviderApiKey({
+      explicitApiKey: input.apiKey,
+      encryptedApiKey: input.encryptedApiKey,
+      provider: input.provider,
+      request,
+    });
 
     const records = await Promise.all(
-      preparedGenerations.map(async ({ existingRecord, generation }) => {
+      preparedGenerations.map(async ({ generation }) => {
         const runningRecord = buildDraftRecord({
           budget,
           expiresAt,
@@ -74,12 +82,6 @@ export async function POST(request: Request) {
           provider: input.provider,
           status: "running",
         });
-
-        if (existingRecord) {
-          return existingRecord.kind === "draft"
-            ? existingRecord
-            : buildIdConflictRecord(runningRecord, existingRecord.kind);
-        }
 
         await saveGenerationRecord(runningRecord, input.ttlSeconds);
 
@@ -193,22 +195,6 @@ function toGenerationError(error: {
     code: error.code,
     message: error.message,
     providerStatus: error.providerStatus,
-  };
-}
-
-function buildIdConflictRecord(
-  record: GenerationRecord,
-  existingKind: GenerationRecord["kind"],
-): GenerationRecord {
-  return {
-    ...record,
-    status: "failed",
-    error: {
-      code: "generation_id_conflict",
-      message: `Generation id already exists for kind: ${existingKind}.`,
-      providerStatus: null,
-    },
-    updatedAt: new Date().toISOString(),
   };
 }
 
