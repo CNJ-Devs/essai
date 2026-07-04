@@ -23,8 +23,6 @@ import Carousel, { type ICarouselInstance } from "react-native-reanimated-carous
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import type {
   StyleProp,
-  TextLayoutEvent,
-  TextStyle,
   ViewStyle,
 } from "react-native";
 import {
@@ -63,6 +61,7 @@ import {
   PencilLine,
   Plus,
   RotateCcw,
+  Send,
   Settings,
   Trash2,
   Upload,
@@ -238,13 +237,15 @@ type AvailableModelOption = ModelOption & {
 
 type TranslateOptions = Record<string, string | number | boolean | null>;
 
-type DraftGenerationPayload = SchemeGenerationSnapshot["content"];
+type DraftGenerationPayload =
+  | SchemeGenerationSnapshot["content"]
+  | RewriteGenerationSnapshot["content"];
 
 type DraftGenerationTarget = {
   draftId: string;
   fragmentId: string;
   payload: DraftGenerationPayload;
-  snapshot: SchemeGenerationSnapshot;
+  snapshot: GenerationSnapshot;
   versionId: string;
 };
 
@@ -337,6 +338,7 @@ const mobileResources = {
         revise: "修订",
         view: "查看",
         retry: "重试",
+        rewrite: "改写",
         jump: "跳转",
         saveScheme: "保存方案",
         createSchemeSubmit: "创建方案",
@@ -401,6 +403,8 @@ const mobileResources = {
           contentTitle: "内容",
           sourceTitle: "生成依据",
           schemeTitle: "初稿方案",
+          rewriteSourceVersionTitle: "原稿版本",
+          rewriteInstructionTitle: "修改意见",
           lawsTitle: "创作法则",
           noLaws: "这份方案暂时没有绑定创作法则。",
           lawUnavailable: "这条法则暂时无法显示。",
@@ -413,6 +417,11 @@ const mobileResources = {
           snapshotA11y: "查看生成依据",
           editA11y: "编辑稿件",
           retryA11y: "重试生成",
+          rewriteA11y: "改写稿件",
+          rewriteTitle: "改写这一稿",
+          rewriteDescription: "写下你想调整的方向，我会基于当前稿件生成一版新的内容。",
+          rewriteSourceTitle: "当前稿件",
+          rewritePlaceholder: "比如更锋利一点、压缩到 60 秒、结尾更有余味……",
           deleteA11y: "删除稿件",
         },
         settings: {
@@ -589,6 +598,7 @@ const mobileResources = {
         revise: "Revise",
         view: "View",
         retry: "Retry",
+        rewrite: "Rewrite",
         jump: "Jump",
         saveScheme: "Save Scheme",
         createSchemeSubmit: "Create Scheme",
@@ -653,6 +663,8 @@ const mobileResources = {
           contentTitle: "Content",
           sourceTitle: "Source",
           schemeTitle: "Scheme",
+          rewriteSourceVersionTitle: "Source Version",
+          rewriteInstructionTitle: "Revision Note",
           lawsTitle: "Creative Rules",
           noLaws: "This scheme has no creative rules yet.",
           lawUnavailable: "This rule cannot be displayed.",
@@ -665,6 +677,11 @@ const mobileResources = {
           snapshotA11y: "View source",
           editA11y: "Edit draft",
           retryA11y: "Retry generation",
+          rewriteA11y: "Rewrite draft",
+          rewriteTitle: "Rewrite this draft",
+          rewriteDescription: "Describe what should change, and EssAI will create a new version from the current draft.",
+          rewriteSourceTitle: "Current draft",
+          rewritePlaceholder: "For example: sharper, shorter, warmer, or better for a 60-second script...",
           deleteA11y: "Delete draft",
         },
         settings: {
@@ -1402,7 +1419,7 @@ export default function App() {
 
       await updatePersistedFragmentTitle(fragment.id, title, new Date().toISOString());
       setFragments((current) =>
-        current.map((item) =>
+        (Array.isArray(current) ? current : []).map((item) =>
           item.id === fragment.id ? { ...item, title } : item,
         ),
       );
@@ -2218,6 +2235,25 @@ export default function App() {
                     }
                   }}
                   onRetryVersion={async (sourceVersion) => {
+                    if (sourceVersion.snapshot.type === "rewrite") {
+                      const plan = createPendingRewriteGenerationPlan({
+                        draftId: draft.id,
+                        fragmentId: fragment.id,
+                        instruction: sourceVersion.snapshot.content.instruction,
+                        sourceContent: sourceVersion.snapshot.content.sourceContent,
+                        sourceVersionId:
+                          sourceVersion.snapshot.content.sourceVersionId,
+                        startVersionNo: draft.versions.length + 1,
+                      });
+                      const version = plan.draft.versions[0];
+
+                      if (!version) return null;
+
+                      await appendDraftVersion(fragment.id, draft.id, version);
+                      void requestDraftGenerations(plan.targets);
+                      return version.id;
+                    }
+
                     if (!scheme) return null;
 
                     const plan = createPendingDraftGenerationPlan({
@@ -2227,6 +2263,23 @@ export default function App() {
                       laws,
                       scheme,
                       snapshot: getRetrySnapshot(sourceVersion, fragment, scheme, laws),
+                      startVersionNo: draft.versions.length + 1,
+                    });
+                    const version = plan.draft.versions[0];
+
+                    if (!version) return null;
+
+                    await appendDraftVersion(fragment.id, draft.id, version);
+                    void requestDraftGenerations(plan.targets);
+                    return version.id;
+                  }}
+                  onRewriteVersion={async (sourceVersion, instruction) => {
+                    const plan = createPendingRewriteGenerationPlan({
+                      draftId: draft.id,
+                      fragmentId: fragment.id,
+                      instruction,
+                      sourceContent: sourceVersion.content,
+                      sourceVersionId: sourceVersion.id,
                       startVersionNo: draft.versions.length + 1,
                     });
                     const version = plan.draft.versions[0];
@@ -2541,6 +2594,39 @@ function DetailScrollView({
     >
       {children}
     </ScrollView>
+  );
+}
+
+function useCappedDetailContentHeight() {
+  const { height: windowHeight } = useWindowDimensions();
+
+  return Math.round(Math.max(220, windowHeight * 0.6));
+}
+
+function useFormTextAreaHeight(scale: number, min: number, max: number) {
+  const { height: windowHeight } = useWindowDimensions();
+
+  return Math.round(Math.min(max, Math.max(min, windowHeight * scale)));
+}
+
+function ReadonlyContentBox({
+  children,
+  maxHeight,
+}: {
+  children: ReactNode;
+  maxHeight: number;
+}) {
+  return (
+    <View style={[styles.paperSurfaceFrame, { maxHeight }]}>
+      <ScrollView
+        bounces={false}
+        nestedScrollEnabled
+        contentContainerStyle={styles.paperSurfaceScrollInner}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={styles.paperSurfaceText}>{children}</Text>
+      </ScrollView>
+    </View>
   );
 }
 
@@ -3519,9 +3605,23 @@ function ComposeSheet({
   const [selection, setSelection] = useState<SchemeSelection>(() =>
     createDefaultSchemeSelection(schemes),
   );
+  const [contentFrameHeight, setContentFrameHeight] = useState(0);
+  const [schemeSelectionHeight, setSchemeSelectionHeight] = useState(0);
   const insets = useSafeAreaInsets();
   const floatingButtonBottom = insets.bottom + 14;
   const scrollBottomPadding = floatingButtonBottom + 42 + 18;
+  const composeInputMinHeight = 140;
+  const composeFormGap = 18;
+  const composeInputHeight =
+    contentFrameHeight > 0
+      ? Math.max(
+          composeInputMinHeight,
+          contentFrameHeight -
+            scrollBottomPadding -
+            schemeSelectionHeight -
+            composeFormGap,
+        )
+      : composeInputMinHeight;
   const canSubmit = content.trim().length > 0;
 
   useEffect(() => {
@@ -3554,6 +3654,22 @@ function ComposeSheet({
     });
   }
 
+  function updateContentFrameHeight(height: number) {
+    const nextHeight = Math.floor(height);
+
+    setContentFrameHeight((current) =>
+      current === nextHeight ? current : nextHeight,
+    );
+  }
+
+  function updateSchemeSelectionHeight(height: number) {
+    const nextHeight = Math.ceil(height);
+
+    setSchemeSelectionHeight((current) =>
+      current === nextHeight ? current : nextHeight,
+    );
+  }
+
   return (
     <Modal
       {...androidSystemBarModalProps}
@@ -3579,12 +3695,20 @@ function ComposeSheet({
             title={tx("compose.title")}
           />
 
-          <View style={styles.modalContentFrame}>
+          <View
+            style={styles.modalContentFrame}
+            onLayout={({ nativeEvent }) =>
+              updateContentFrameHeight(nativeEvent.layout.height)
+            }
+          >
             <ScrollView
               style={styles.composeScroll}
               contentContainerStyle={[
                 styles.composeScrollContent,
-                { paddingBottom: scrollBottomPadding },
+                {
+                  minHeight: contentFrameHeight,
+                  paddingBottom: scrollBottomPadding,
+                },
               ]}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
@@ -3593,18 +3717,29 @@ function ComposeSheet({
                 value={content}
                 onChangeText={setContent}
                 multiline
+                scrollEnabled
                 textAlignVertical="top"
                 placeholder={tx("compose.placeholder")}
                 placeholderTextColor={colors.muted}
-                style={[styles.composeInput, styles.composeInputCompact]}
+                style={[
+                  styles.composeInput,
+                  styles.composeInputCompact,
+                  { flex: 0, height: composeInputHeight },
+                ]}
               />
 
-              <SchemeSelectionScroller
-                schemes={schemes}
-                selection={selection}
-                onCountChange={setCount}
-                onToggle={toggleScheme}
-              />
+              <View
+                onLayout={({ nativeEvent }) =>
+                  updateSchemeSelectionHeight(nativeEvent.layout.height)
+                }
+              >
+                <SchemeSelectionScroller
+                  schemes={schemes}
+                  selection={selection}
+                  onCountChange={setCount}
+                  onToggle={toggleScheme}
+                />
+              </View>
             </ScrollView>
 
             <View
@@ -3764,6 +3899,8 @@ function SchemeEditor({
   const [quickLawTags, setQuickLawTags] = useState<string[]>([]);
   const [quickLawError, setQuickLawError] = useState<string | null>(null);
   const insets = useSafeAreaInsets();
+  const descriptionInputHeight = useFormTextAreaHeight(0.18, 128, 220);
+  const quickLawInputHeight = useFormTextAreaHeight(0.14, 104, 168);
   const floatingButtonBottom = insets.bottom + 14;
   const scrollBottomPadding = floatingButtonBottom + 42 + 18;
   const canSubmit = description.trim().length > 0;
@@ -3871,10 +4008,11 @@ function SchemeEditor({
               value={description}
               onChangeText={setDescription}
               multiline
+              scrollEnabled
               textAlignVertical="top"
               placeholder={tx("schemeEditor.descriptionPlaceholder")}
               placeholderTextColor={colors.muted}
-              style={styles.noteInput}
+              style={[styles.noteInput, { height: descriptionInputHeight }]}
             />
             <Text style={styles.inputLabel}>{tx("schemeEditor.lawsLabel")}</Text>
             <Text style={styles.helpText}>
@@ -3980,10 +4118,11 @@ function SchemeEditor({
                 value={quickLawContent}
                 onChangeText={setQuickLawContent}
                 multiline
+                scrollEnabled
                 textAlignVertical="top"
                 placeholder={tx("lawEditor.contentPlaceholder")}
                 placeholderTextColor={colors.muted}
-                style={styles.quickLawInput}
+                style={[styles.quickLawInput, { height: quickLawInputHeight }]}
               />
               <TagEditor tags={quickLawTags} onChange={setQuickLawTags} />
               {quickLawError ? (
@@ -4034,6 +4173,7 @@ function LawEditor({
   const [content, setContent] = useState(initialLaw?.content ?? "");
   const [tags, setTags] = useState<string[]>(initialLaw?.tags ?? []);
   const insets = useSafeAreaInsets();
+  const contentInputHeight = useFormTextAreaHeight(0.24, 150, 280);
   const floatingButtonBottom = insets.bottom + 14;
   const scrollBottomPadding = floatingButtonBottom + 42 + 18;
   const canSubmit = name.trim().length > 0 && content.trim().length > 0;
@@ -4093,10 +4233,11 @@ function LawEditor({
               value={content}
               onChangeText={setContent}
               multiline
+              scrollEnabled
               textAlignVertical="top"
               placeholder={tx("lawEditor.contentPlaceholder")}
               placeholderTextColor={colors.muted}
-              style={styles.noteInput}
+              style={[styles.noteInput, { height: contentInputHeight }]}
             />
             <TagEditor tags={tags} onChange={setTags} />
           </ScrollView>
@@ -4280,149 +4421,6 @@ function ConfirmDialog({
   );
 }
 
-function TruncatedTextPreview({
-  moreLabel = tx("actions.more"),
-  numberOfLines,
-  onMorePress,
-  style,
-  text,
-}: {
-  moreLabel?: string;
-  numberOfLines: number;
-  onMorePress: () => void;
-  style: StyleProp<TextStyle>;
-  text: string;
-}) {
-  const [hasMore, setHasMore] = useState(false);
-  const [previewWidth, setPreviewWidth] = useState(0);
-  const measureTextRef = useRef<unknown>(null);
-  const flattenedTextStyle = StyleSheet.flatten(style) ?? {};
-  const lineHeight =
-    typeof flattenedTextStyle.lineHeight === "number"
-      ? flattenedTextStyle.lineHeight
-      : 22;
-  const collapsedMaxHeight = lineHeight * numberOfLines;
-  const webClipStyle =
-    Platform.OS === "web"
-      ? ({
-          maxHeight: collapsedMaxHeight,
-          overflow: "hidden",
-        } satisfies TextStyle)
-      : null;
-
-  useEffect(() => {
-    setHasMore(false);
-  }, [numberOfLines, text]);
-
-  useEffect(() => {
-    if (Platform.OS !== "web" || previewWidth <= 0) return;
-
-    const timeout = setTimeout(() => {
-      const element = getDomElement(measureTextRef.current);
-      const measuredHeight =
-        typeof element?.scrollHeight === "number"
-          ? element.scrollHeight
-          : element?.getBoundingClientRect?.().height;
-
-      if (typeof measuredHeight === "number" && measuredHeight > 0) {
-        const nextHasMore = measuredHeight > collapsedMaxHeight + 1;
-
-        setHasMore((current) =>
-          current === nextHasMore ? current : nextHasMore,
-        );
-        return;
-      }
-
-      const fontSize =
-        typeof flattenedTextStyle.fontSize === "number"
-          ? flattenedTextStyle.fontSize
-          : 14;
-      const charsPerLine = Math.max(
-        6,
-        Math.floor(previewWidth / Math.max(1, fontSize)),
-      );
-      const nextHasMore =
-        Math.ceil(text.length / charsPerLine) > numberOfLines;
-
-      setHasMore((current) => (current === nextHasMore ? current : nextHasMore));
-    }, 0);
-
-    return () => clearTimeout(timeout);
-  }, [
-    collapsedMaxHeight,
-    flattenedTextStyle.fontSize,
-    numberOfLines,
-    previewWidth,
-    text,
-  ]);
-
-  function handleMeasureTextLayout(event: TextLayoutEvent) {
-    if (Platform.OS === "web") return;
-
-    const nextHasMore = event.nativeEvent.lines.length > numberOfLines;
-
-    setHasMore((current) => (current === nextHasMore ? current : nextHasMore));
-  }
-
-  return (
-    <View
-      style={styles.truncatedPreview}
-      onLayout={({ nativeEvent }) => {
-        setPreviewWidth(nativeEvent.layout.width);
-      }}
-    >
-      <Text
-        accessible={false}
-        ref={(node) => {
-          measureTextRef.current = node;
-        }}
-        onTextLayout={handleMeasureTextLayout}
-        style={[style, styles.truncatedMeasureText]}
-      >
-        {text}
-      </Text>
-      <Text
-        ellipsizeMode="tail"
-        numberOfLines={Platform.OS === "web" ? undefined : numberOfLines}
-        style={[
-          style,
-          styles.truncatedVisibleText,
-          hasMore && styles.truncatedVisibleTextWithMore,
-          webClipStyle,
-        ]}
-      >
-        {text}
-      </Text>
-      {hasMore ? (
-        <Pressable style={styles.inlineMoreButton} onPress={onMorePress}>
-          <Text style={styles.inlineMoreButtonText}>{moreLabel}</Text>
-        </Pressable>
-      ) : null}
-    </View>
-  );
-}
-
-function getDomElement(node: unknown):
-  | {
-      getBoundingClientRect?: () => { height: number };
-      scrollHeight?: number;
-    }
-  | null {
-  if (!node || typeof node !== "object") return null;
-
-  const maybeElement = node as {
-    getBoundingClientRect?: () => { height: number };
-    getNode?: () => unknown;
-    nodeType?: number;
-    scrollHeight?: number;
-    _node?: unknown;
-  };
-
-  if (maybeElement.nodeType === 1) return maybeElement;
-
-  return getDomElement(maybeElement._node ?? maybeElement.getNode?.());
-}
-
 function FragmentDetail({
   fragment,
   schemes,
@@ -4445,6 +4443,7 @@ function FragmentDetail({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
+  const detailContentMaxHeight = useCappedDetailContentHeight();
   const sortedDrafts = [...fragment.drafts].sort(
     (a, b) =>
       new Date(latestDraftVersion(b)?.createdAt ?? 0).getTime() -
@@ -4454,7 +4453,9 @@ function FragmentDetail({
   return (
     <StackScreenSurface>
       <DetailScrollView>
-        <Text style={styles.paperSurface}>{fragment.content}</Text>
+        <ReadonlyContentBox maxHeight={detailContentMaxHeight}>
+          {fragment.content}
+        </ReadonlyContentBox>
 
         <View style={styles.actionRow}>
           <Pressable
@@ -4590,6 +4591,7 @@ function DraftDetail({
   onEditVersion,
   onGenerate,
   onRetryVersion,
+  onRewriteVersion,
   onViewScheme,
   scheme,
 }: {
@@ -4601,21 +4603,28 @@ function DraftDetail({
   onRetryVersion: (
     version: DraftVersion,
   ) => Promise<string | null> | string | null;
+  onRewriteVersion: (
+    version: DraftVersion,
+    instruction: string,
+  ) => Promise<string | null> | string | null;
   onViewScheme: () => void;
   scheme?: Scheme;
 }) {
   const latest = latestDraftVersion(draft);
   const carouselRef = useRef<ICarouselInstance>(null);
+  const lastSyncedCarouselIndexRef = useRef<number | null>(null);
+  const insets = useSafeAreaInsets();
   const [actionVersionId, setActionVersionId] = useState<string | null>(null);
   const [deleteVersionConfirmOpen, setDeleteVersionConfirmOpen] =
     useState(false);
   const [editVersionOpen, setEditVersionOpen] = useState(false);
   const [editVersionText, setEditVersionText] = useState("");
+  const [rewriteOpen, setRewriteOpen] = useState(false);
+  const [rewriteText, setRewriteText] = useState("");
   const [activeVersionId, setActiveVersionId] = useState(latest?.id ?? null);
   const [jumpOpen, setJumpOpen] = useState(false);
   const [jumpValue, setJumpValue] = useState("");
   const [lawDetailId, setLawDetailId] = useState<string | null>(null);
-  const [schemeDetailOpen, setSchemeDetailOpen] = useState(false);
   const [snapshotOpen, setSnapshotOpen] = useState(false);
   const [carouselFrame, setCarouselFrame] = useState({ height: 0, width: 0 });
   const carouselReady = carouselFrame.width > 0 && carouselFrame.height > 0;
@@ -4640,6 +4649,16 @@ function DraftDetail({
   );
   const sourceLaws = getSnapshotLaws(sourceSnapshot, laws);
   const selectedLaw = sourceLaws.find((law) => law.id === lawDetailId);
+  const { height: windowHeight } = useWindowDimensions();
+  const snapshotBoxHeight = Math.round(
+    Math.min(168, Math.max(104, windowHeight * 0.14)),
+  );
+  const snapshotCompactBoxHeight = Math.round(
+    Math.min(124, Math.max(78, windowHeight * 0.1)),
+  );
+  const snapshotPillBoxHeight = Math.round(
+    Math.min(132, Math.max(72, windowHeight * 0.12)),
+  );
   const activeVersionIndex = activeVersion
     ? draft.versions.findIndex((version) => version.id === activeVersion.id)
     : -1;
@@ -4677,6 +4696,20 @@ function DraftDetail({
     jumpTarget >= 1 &&
     jumpTarget <= versionTotal;
 
+  useEffect(() => {
+    if (!carouselReady || activeVersionIndex < 0) return;
+
+    if (lastSyncedCarouselIndexRef.current === activeVersionIndex) return;
+
+    lastSyncedCarouselIndexRef.current = activeVersionIndex;
+    requestAnimationFrame(() => {
+      carouselRef.current?.scrollTo({
+        animated: true,
+        index: activeVersionIndex,
+      });
+    });
+  }, [activeVersionIndex, carouselReady, versionTotal]);
+
   function openJumpDialog() {
     setJumpValue(String(Math.max(activeVersionPosition, 1)));
     setJumpOpen(true);
@@ -4708,6 +4741,12 @@ function DraftDetail({
     setEditVersionOpen(true);
   }
 
+  function openRewrite(version: DraftVersion) {
+    setActionVersionId(version.id);
+    setRewriteText("");
+    setRewriteOpen(true);
+  }
+
   async function saveVersionEdit() {
     const nextContent = editVersionText.trim();
 
@@ -4725,6 +4764,20 @@ function DraftDetail({
   async function retryVersion(version: DraftVersion) {
     setActionVersionId(version.id);
     const nextVersionId = await onRetryVersion(version);
+
+    if (nextVersionId) {
+      setActiveVersionId(nextVersionId);
+      setActionVersionId(nextVersionId);
+    }
+  }
+
+  async function submitRewrite() {
+    const instruction = rewriteText.trim();
+
+    if (!instruction || !actionVersion) return;
+
+    const nextVersionId = await onRewriteVersion(actionVersion, instruction);
+    setRewriteOpen(false);
 
     if (nextVersionId) {
       setActiveVersionId(nextVersionId);
@@ -4761,6 +4814,7 @@ function DraftDetail({
     if (!version) return;
 
     setActiveVersionId(version.id);
+    lastSyncedCarouselIndexRef.current = index;
     carouselRef.current?.scrollTo({
       animated: true,
       index,
@@ -4976,6 +5030,17 @@ function DraftDetail({
                         {item.content || tx("pages.drafts.pendingPreview")}
                       </Text>
                     </ScrollView>
+                    <Pressable
+                      accessibilityLabel={tx("pages.drafts.rewriteA11y")}
+                      style={styles.draftRewriteButton}
+                      onPress={() => openRewrite(item)}
+                    >
+                      <WandSparkles
+                        color={colors.primaryText}
+                        size={18}
+                        strokeWidth={2.35}
+                      />
+                    </Pressable>
                   </View>
                 </View>
               )}
@@ -5044,84 +5109,88 @@ function DraftDetail({
             <Text style={styles.centerModalTitle}>
               {tx("pages.drafts.sourceTitle")}
             </Text>
-            <ScrollView
-              style={styles.versionModalScroll}
-              contentContainerStyle={styles.versionModalScrollInner}
-              showsVerticalScrollIndicator={false}
-            >
-              <View style={styles.versionModalSection}>
-                <Text style={styles.versionModalLabel}>
-                  {tx("pages.drafts.schemeTitle")}
-                </Text>
-                <TruncatedTextPreview
-                  numberOfLines={3}
-                  onMorePress={() => setSchemeDetailOpen(true)}
-                  style={styles.versionModalText}
-                  text={sourceSchemeDescription}
-                />
-              </View>
-              <View style={styles.versionModalSection}>
-                <Text style={styles.versionModalLabel}>
-                  {tx("pages.drafts.lawsTitle")}
-                </Text>
-                {sourceLaws.length > 0 ? (
-                  <View style={styles.draftLawPillRow}>
-                    {sourceLaws.map((law) => (
-                      <Pressable
-                        key={law.id}
-                        style={styles.lawPillButton}
-                        onPress={() => setLawDetailId(law.id)}
-                      >
-                        <Text style={styles.lawPillButtonText} numberOfLines={1}>
-                          {law.title}
-                        </Text>
-                      </Pressable>
-                    ))}
+            <View style={styles.versionModalBody}>
+              {sourceSnapshot?.type === "rewrite" ? (
+                <>
+                  <View style={styles.versionModalSection}>
+                    <Text style={styles.versionModalLabel}>
+                      {tx("pages.drafts.rewriteSourceVersionTitle")}
+                    </Text>
+                    <ScrollableSnapshotBox height={snapshotBoxHeight}>
+                      <Text style={styles.versionModalText}>
+                        {sourceSnapshot.content.sourceContent}
+                      </Text>
+                    </ScrollableSnapshotBox>
                   </View>
-                ) : (
-                  <Text style={styles.versionModalText}>
-                    {tx("pages.drafts.noLaws")}
-                  </Text>
-                )}
-              </View>
-            </ScrollView>
+                  <View style={styles.versionModalSection}>
+                    <Text style={styles.versionModalLabel}>
+                      {tx("pages.drafts.rewriteInstructionTitle")}
+                    </Text>
+                    <ScrollableSnapshotBox height={snapshotCompactBoxHeight}>
+                      <Text style={styles.versionModalText}>
+                        {sourceSnapshot.content.instruction}
+                      </Text>
+                    </ScrollableSnapshotBox>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <View style={styles.versionModalSection}>
+                    <Text style={styles.versionModalLabel}>
+                      {tx("pages.drafts.schemeTitle")}
+                    </Text>
+                    <ScrollableSnapshotBox height={snapshotBoxHeight}>
+                      <Text style={styles.versionModalText}>
+                        {sourceSchemeDescription}
+                      </Text>
+                    </ScrollableSnapshotBox>
+                  </View>
+                  <View style={styles.versionModalSection}>
+                    <Text style={styles.versionModalLabel}>
+                      {tx("pages.drafts.lawsTitle")}
+                    </Text>
+                    {sourceLaws.length > 0 ? (
+                      <View
+                        style={[
+                          styles.snapshotPillScrollBox,
+                          { maxHeight: snapshotPillBoxHeight },
+                        ]}
+                      >
+                        <ScrollView
+                          bounces={false}
+                          style={styles.snapshotPillScroll}
+                          contentContainerStyle={styles.snapshotPillScrollInner}
+                          showsVerticalScrollIndicator={false}
+                        >
+                          {sourceLaws.map((law) => (
+                            <Pressable
+                              key={law.id}
+                              style={styles.lawPillButton}
+                              onPress={() => setLawDetailId(law.id)}
+                            >
+                              <Text
+                                style={styles.lawPillButtonText}
+                                numberOfLines={1}
+                              >
+                                {law.title}
+                              </Text>
+                            </Pressable>
+                          ))}
+                        </ScrollView>
+                      </View>
+                    ) : (
+                      <Text style={styles.versionModalText}>
+                        {tx("pages.drafts.noLaws")}
+                      </Text>
+                    )}
+                  </View>
+                </>
+              )}
+            </View>
             <View style={styles.centerModalActions}>
               <Pressable
                 style={styles.primaryButton}
                 onPress={() => setSnapshotOpen(false)}
-              >
-                <Text style={styles.primaryButtonText}>
-                  {tx("actions.gotIt")}
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-      <Modal
-        animationType="fade"
-        onRequestClose={() => setSchemeDetailOpen(false)}
-        transparent
-        visible={schemeDetailOpen}
-      >
-        <View style={styles.centerModalOverlay}>
-          <View style={[styles.centerModalCard, styles.versionModalCard]}>
-            <Text style={styles.centerModalTitle}>
-              {tx("pages.drafts.schemeTitle")}
-            </Text>
-            <ScrollView
-              style={styles.versionModalScroll}
-              contentContainerStyle={styles.versionModalScrollInner}
-              showsVerticalScrollIndicator={false}
-            >
-              <Text style={styles.versionModalText}>
-                {sourceSchemeDescription}
-              </Text>
-            </ScrollView>
-            <View style={styles.centerModalActions}>
-              <Pressable
-                style={styles.primaryButton}
-                onPress={() => setSchemeDetailOpen(false)}
               >
                 <Text style={styles.primaryButtonText}>
                   {tx("actions.gotIt")}
@@ -5225,6 +5294,88 @@ function DraftDetail({
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      <Modal
+        {...androidSystemBarModalProps}
+        animationType="slide"
+        onRequestClose={() => setRewriteOpen(false)}
+        presentationStyle="pageSheet"
+        visible={rewriteOpen}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.select({ ios: "padding", default: undefined })}
+          style={styles.modalShell}
+        >
+          <SafeAreaView
+            edges={["right", "left"]}
+            style={[
+              styles.modalSafeArea,
+              Platform.OS === "android" ? { paddingTop: insets.top + 14 } : null,
+            ]}
+          >
+            <ModalHeader
+              description={tx("pages.drafts.rewriteDescription")}
+              onClose={() => setRewriteOpen(false)}
+              title={tx("pages.drafts.rewriteTitle")}
+            />
+            <View style={styles.modalContentFrame}>
+              <View
+                style={[
+                  styles.rewriteDrawerBody,
+                  { paddingBottom: Math.max(insets.bottom, 10) + 14 },
+                ]}
+              >
+                <View style={styles.rewriteSourceCard}>
+                  <Text style={styles.rewriteSourceTitle}>
+                    {tx("pages.drafts.rewriteSourceTitle")}
+                  </Text>
+                  <ScrollView
+                    style={styles.rewriteSourceScroll}
+                    contentContainerStyle={styles.rewriteSourceScrollInner}
+                    showsVerticalScrollIndicator={false}
+                  >
+                    <Text style={styles.rewriteSourceText}>
+                      {actionVersion?.content || tx("pages.drafts.pendingPreview")}
+                    </Text>
+                  </ScrollView>
+                </View>
+                <View style={styles.rewriteMessageBox}>
+                  <ScrollView
+                    style={styles.rewriteMessageScroll}
+                    contentContainerStyle={styles.rewriteMessageScrollInner}
+                    keyboardShouldPersistTaps="handled"
+                    showsVerticalScrollIndicator={false}
+                  >
+                    <TextInput
+                      multiline
+                      onChangeText={setRewriteText}
+                      placeholder={tx("pages.drafts.rewritePlaceholder")}
+                      placeholderTextColor={colors.muted}
+                      scrollEnabled={false}
+                      style={styles.rewriteMessageInput}
+                      textAlignVertical="top"
+                      value={rewriteText}
+                    />
+                  </ScrollView>
+                  <Pressable
+                    disabled={!rewriteText.trim()}
+                    style={[
+                      styles.rewriteSendButton,
+                      !rewriteText.trim() && styles.buttonDisabled,
+                    ]}
+                    onPress={submitRewrite}
+                  >
+                    <Send
+                      color={colors.primaryText}
+                      size={18}
+                      strokeWidth={2.35}
+                    />
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </SafeAreaView>
+        </KeyboardAvoidingView>
+      </Modal>
       <ConfirmDialog
         confirmLabel={tx("actions.delete")}
         onCancel={() => setDeleteVersionConfirmOpen(false)}
@@ -5249,6 +5400,9 @@ function FragmentContentEditor({
   onSubmit: (content: string) => void;
 }) {
   const [content, setContent] = useState(fragment.content);
+  const insets = useSafeAreaInsets();
+  const floatingButtonBottom = insets.bottom + 14;
+  const scrollBottomPadding = floatingButtonBottom + 42 + 18;
   const canSubmit = content.trim().length > 0;
 
   useEffect(() => {
@@ -5269,35 +5423,55 @@ function FragmentContentEditor({
         behavior={Platform.select({ ios: "padding", default: undefined })}
         style={styles.modalShell}
       >
-        <ModalSurface>
+        <SafeAreaView
+          edges={["right", "left"]}
+          style={[
+            styles.modalSafeArea,
+            Platform.OS === "android" ? { paddingTop: insets.top + 14 } : null,
+          ]}
+        >
           <ModalHeader
             description={tx("fragmentDetail.editDescription")}
             onClose={onClose}
             title={tx("fragmentDetail.editTitle")}
           />
-          <View style={styles.draftEditBody}>
-            <TextInput
-              value={content}
-              onChangeText={setContent}
-              multiline
-              textAlignVertical="top"
-              placeholder={tx("fragmentDetail.editPlaceholder")}
-              placeholderTextColor={colors.muted}
-              style={styles.composeInput}
-            />
-          </View>
-          <View style={styles.modalFooter}>
-            <Pressable
-              disabled={!canSubmit}
-              style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
-              onPress={() => onSubmit(content.trim())}
+          <View style={styles.modalContentFrame}>
+            <View
+              style={[
+                styles.draftEditBody,
+                { paddingBottom: scrollBottomPadding },
+              ]}
             >
-              <Text style={styles.primaryButtonText}>
-                {tx("actions.confirm")}
-              </Text>
-            </Pressable>
+              <TextInput
+                value={content}
+                onChangeText={setContent}
+                multiline
+                scrollEnabled
+                textAlignVertical="top"
+                placeholder={tx("fragmentDetail.editPlaceholder")}
+                placeholderTextColor={colors.muted}
+                style={styles.composeInput}
+              />
+            </View>
+            <View
+              pointerEvents="box-none"
+              style={[
+                styles.modalFloatingAction,
+                { bottom: floatingButtonBottom },
+              ]}
+            >
+              <Pressable
+                disabled={!canSubmit}
+                style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
+                onPress={() => onSubmit(content.trim())}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {tx("actions.confirm")}
+                </Text>
+              </Pressable>
+            </View>
           </View>
-        </ModalSurface>
+        </SafeAreaView>
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -5317,6 +5491,9 @@ function DraftGenerateSheet({
   const [selection, setSelection] = useState<SchemeSelection>(() =>
     createDefaultSchemeSelection(schemes),
   );
+  const insets = useSafeAreaInsets();
+  const floatingButtonBottom = insets.bottom + 14;
+  const scrollBottomPadding = floatingButtonBottom + 42 + 18;
   const canSubmit = Object.values(selection).some((item) => item.selected);
 
   useEffect(() => {
@@ -5356,31 +5533,52 @@ function DraftGenerateSheet({
       visible={visible}
       onRequestClose={onClose}
     >
-      <ModalSurface>
+      <View style={styles.modalShell}>
+        <SafeAreaView
+          edges={["right", "left"]}
+          style={[
+            styles.modalSafeArea,
+            Platform.OS === "android" ? { paddingTop: insets.top + 14 } : null,
+          ]}
+        >
         <ModalHeader
           description={tx("fragmentDetail.generateDescription")}
           onClose={onClose}
           title={tx("fragmentDetail.generateTitle")}
         />
-        <View style={styles.draftGenerateBody}>
-          <DraftSchemeSelectionList
-            schemes={schemes}
-            selection={selection}
-            onCountChange={setCount}
-            onToggle={toggleScheme}
-          />
-        </View>
-        <View style={styles.modalFooter}>
-          <Pressable
-            disabled={!canSubmit}
-            style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
-            onPress={() => onSubmit(selection)}
+        <View style={styles.modalContentFrame}>
+          <View style={styles.draftGenerateBody}>
+            <DraftSchemeSelectionList
+              schemes={schemes}
+              selection={selection}
+              bottomPadding={scrollBottomPadding}
+              onCountChange={setCount}
+              onToggle={toggleScheme}
+            />
+          </View>
+          <View
+            pointerEvents="box-none"
+            style={[
+              styles.modalFloatingAction,
+              { bottom: floatingButtonBottom },
+            ]}
           >
-            <WandSparkles color={colors.primaryText} size={17} strokeWidth={2.35} />
-            <Text style={styles.primaryButtonText}>{tx("actions.draft")}</Text>
-          </Pressable>
+            <Pressable
+              disabled={!canSubmit}
+              style={[styles.primaryButton, !canSubmit && styles.buttonDisabled]}
+              onPress={() => onSubmit(selection)}
+            >
+              <WandSparkles
+                color={colors.primaryText}
+                size={17}
+                strokeWidth={2.35}
+              />
+              <Text style={styles.primaryButtonText}>{tx("actions.draft")}</Text>
+            </Pressable>
+          </View>
         </View>
-      </ModalSurface>
+        </SafeAreaView>
+      </View>
     </Modal>
   );
 }
@@ -5388,11 +5586,13 @@ function DraftGenerateSheet({
 function DraftSchemeSelectionList({
   schemes,
   selection,
+  bottomPadding = 16,
   onCountChange,
   onToggle,
 }: {
   schemes: Scheme[];
   selection: SchemeSelection;
+  bottomPadding?: number;
   onCountChange: (schemeId: string, count: Count) => void;
   onToggle: (schemeId: string) => void;
 }) {
@@ -5404,7 +5604,10 @@ function DraftSchemeSelectionList({
       {schemes.length > 0 ? (
         <ScrollView
           style={styles.draftSchemeListScroll}
-          contentContainerStyle={styles.draftSchemeList}
+          contentContainerStyle={[
+            styles.draftSchemeList,
+            { paddingBottom: bottomPadding },
+          ]}
           showsVerticalScrollIndicator={false}
         >
           {schemes.map((scheme) => {
@@ -5505,6 +5708,7 @@ function SchemeDetail({
   onOpenFragment: (id: string) => void;
 }) {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const detailContentMaxHeight = useCappedDetailContentHeight();
   const boundLaws = laws.filter((law) => scheme.lawIds.includes(law.id));
   const relatedFragments = fragments.filter((fragment) =>
     fragment.drafts.some((draft) => draft.schemeId === scheme.id),
@@ -5517,7 +5721,9 @@ function SchemeDetail({
           contentContainerStyle={styles.detailInner}
           showsVerticalScrollIndicator={false}
         >
-          <Text style={styles.paperSurface}>{scheme.content}</Text>
+          <ReadonlyContentBox maxHeight={detailContentMaxHeight}>
+            {scheme.content}
+          </ReadonlyContentBox>
           <Text style={styles.sectionTitle}>{tx("schemeEditor.lawsLabel")}</Text>
           {boundLaws.length > 0 ? (
             boundLaws.map((law) => (
@@ -5674,6 +5880,27 @@ function EmptyState({
   );
 }
 
+function ScrollableSnapshotBox({
+  children,
+  height,
+}: {
+  children: ReactNode;
+  height: number;
+}) {
+  return (
+    <View style={[styles.snapshotScrollBox, { height }]}>
+      <ScrollView
+        bounces={false}
+        style={styles.snapshotScroll}
+        contentContainerStyle={styles.snapshotScrollInner}
+        showsVerticalScrollIndicator={false}
+      >
+        {children}
+      </ScrollView>
+    </View>
+  );
+}
+
 function useColumnMetrics(minColumnWidth: number, gap: number) {
   const { width } = useWindowDimensions();
   const availableWidth = getContentWidth(width);
@@ -5764,6 +5991,65 @@ function createPendingDraftGenerationPlan({
       snapshot: generationSnapshot,
       versionId: version.id,
     })),
+  };
+}
+
+function createPendingRewriteGenerationPlan({
+  draftId,
+  fragmentId,
+  instruction,
+  sourceContent,
+  sourceVersionId,
+  startVersionNo,
+}: {
+  draftId: string;
+  fragmentId: string;
+  instruction: string;
+  sourceContent: string;
+  sourceVersionId: string;
+  startVersionNo: number;
+}): {
+  draft: Draft;
+  targets: DraftGenerationTarget[];
+} {
+  const snapshot: RewriteGenerationSnapshot = {
+    content: {
+      instruction,
+      sourceContent,
+      sourceVersionId,
+    },
+    type: "rewrite",
+    version: 1,
+  };
+  const createdAt = new Date().toISOString();
+  const deadlineAt = new Date(
+    Date.now() + generationWorkflowTimeoutMs + generationDeadlineBufferMs,
+  ).toISOString();
+  const version: DraftVersion = {
+    content: tx("pages.drafts.pendingPreview"),
+    createdAt,
+    deadlineAt,
+    id: createId("version"),
+    snapshot,
+    status: "brewing",
+    versionNo: startVersionNo,
+  };
+
+  return {
+    draft: {
+      id: draftId,
+      schemeId: "",
+      versions: [version],
+    },
+    targets: [
+      {
+        draftId,
+        fragmentId,
+        payload: snapshot.content,
+        snapshot,
+        versionId: version.id,
+      },
+    ],
   };
 }
 
@@ -7172,8 +7458,14 @@ function resolveGenerationService(
     return null;
   }
 
+  const apiKey = providerKeys[activeModel.providerId].trim();
+
+  if (!apiKey) {
+    return null;
+  }
+
   return {
-    apiKey: providerKeys[activeModel.providerId].trim(),
+    apiKey,
     model: getModelNameFromId(activeModel.id),
     provider: activeModel.providerId,
   };
@@ -8193,7 +8485,6 @@ function createThemedStyles(colors: ThemeColors) {
     flex: 1,
   },
   composeScrollContent: {
-    flexGrow: 1,
     gap: 18,
     paddingHorizontal: 18,
   },
@@ -8677,6 +8968,21 @@ function createThemedStyles(colors: ThemeColors) {
     lineHeight: 30,
     padding: 18,
   },
+  paperSurfaceFrame: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 18,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  paperSurfaceScrollInner: {
+    padding: 18,
+  },
+  paperSurfaceText: {
+    color: colors.text,
+    fontSize: 16,
+    lineHeight: 30,
+  },
   actionRow: {
     alignItems: "center",
     flexDirection: "row",
@@ -8841,6 +9147,7 @@ function createThemedStyles(colors: ThemeColors) {
     borderWidth: 1,
     gap: 16,
     padding: 16,
+    position: "relative",
   },
   draftContentCardFill: {
     flex: 1,
@@ -8851,12 +9158,101 @@ function createThemedStyles(colors: ThemeColors) {
     minHeight: 0,
   },
   draftContentScrollInner: {
-    paddingBottom: 2,
+    paddingBottom: 68,
   },
   draftContentText: {
     color: colors.text,
     fontSize: 16,
     lineHeight: 30,
+  },
+  draftRewriteButton: {
+    alignItems: "center",
+    backgroundColor: colors.primary,
+    borderColor: colors.card,
+    borderRadius: 999,
+    borderWidth: 4,
+    bottom: 12,
+    height: 48,
+    justifyContent: "center",
+    position: "absolute",
+    right: 12,
+    shadowColor: colors.text,
+    shadowOpacity: 0.15,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    width: 48,
+    zIndex: 10,
+  },
+  rewriteDrawerBody: {
+    flex: 1,
+    gap: 12,
+    minHeight: 0,
+    paddingHorizontal: 18,
+  },
+  rewriteSourceCard: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 16,
+    borderWidth: 1,
+    flex: 3,
+    gap: 8,
+    minHeight: 0,
+    padding: 14,
+  },
+  rewriteSourceTitle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  rewriteSourceScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  rewriteSourceScrollInner: {
+    paddingBottom: 8,
+  },
+  rewriteSourceText: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 23,
+  },
+  rewriteMessageBox: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 18,
+    borderWidth: 1,
+    flex: 2,
+    minHeight: 0,
+    overflow: "hidden",
+    position: "relative",
+  },
+  rewriteMessageScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  rewriteMessageScrollInner: {
+    flexGrow: 1,
+    paddingBottom: 66,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+  },
+  rewriteMessageInput: {
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 23,
+    minHeight: 0,
+    padding: 0,
+  },
+  rewriteSendButton: {
+    alignItems: "center",
+    backgroundColor: colors.primary,
+    borderRadius: 999,
+    bottom: 12,
+    height: 42,
+    justifyContent: "center",
+    position: "absolute",
+    right: 12,
+    width: 42,
   },
   jumpInputRow: {
     alignItems: "center",
@@ -8885,6 +9281,9 @@ function createThemedStyles(colors: ThemeColors) {
   versionModalCard: {
     maxHeight: "78%",
   },
+  versionModalBody: {
+    gap: 14,
+  },
   versionModalScroll: {
     minHeight: 0,
   },
@@ -8894,37 +9293,6 @@ function createThemedStyles(colors: ThemeColors) {
   },
   versionModalSection: {
     gap: 7,
-  },
-  truncatedPreview: {
-    alignSelf: "stretch",
-    position: "relative",
-  },
-  truncatedMeasureText: {
-    left: 0,
-    opacity: 0,
-    position: "absolute",
-    right: 0,
-    top: 0,
-    zIndex: -1,
-  },
-  truncatedVisibleText: {
-    alignSelf: "stretch",
-  },
-  truncatedVisibleTextWithMore: {
-    paddingRight: 54,
-  },
-  inlineMoreButton: {
-    backgroundColor: colors.card,
-    borderRadius: 999,
-    bottom: 0,
-    paddingLeft: 8,
-    position: "absolute",
-    right: 0,
-  },
-  inlineMoreButtonText: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: "800",
   },
   lawPillButton: {
     backgroundColor: colors.secondary,
@@ -8938,6 +9306,18 @@ function createThemedStyles(colors: ThemeColors) {
     fontSize: 12,
     fontWeight: "800",
   },
+  snapshotPillScrollBox: {
+    minHeight: 0,
+  },
+  snapshotPillScroll: {
+    minHeight: 0,
+  },
+  snapshotPillScrollInner: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    paddingBottom: 2,
+  },
   versionModalLabel: {
     color: colors.text,
     fontSize: 13,
@@ -8947,6 +9327,20 @@ function createThemedStyles(colors: ThemeColors) {
     color: colors.muted,
     fontSize: 14,
     lineHeight: 22,
+  },
+  snapshotScrollBox: {
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  snapshotScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  snapshotScrollInner: {
+    padding: 12,
   },
   versionEditorCard: {
     maxHeight: "82%",
