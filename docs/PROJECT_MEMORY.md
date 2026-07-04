@@ -10,6 +10,15 @@ This file records decisions that should survive chat compaction and future sessi
 - Authentication is not required for the current phase.
 - Users provide their own model API keys. Keys should not be stored by our backend.
 
+## Public Repository / License
+
+- If the repository must be public for free deployment, treat public visibility as a hosting constraint only, not as permission for others to use the code.
+- Use an `All Rights Reserved / No license is granted` notice rather than an open-source or source-available license.
+- The notice should explicitly cover current and prior commits, tags, releases, branches, archives, packages, and other versions made available in the repository.
+- Do not grant viewing, review, copying, modification, distribution, production use, hosted service use, competing product use, bulk scraping, or AI/ML training rights without prior written permission.
+- This is a soft/legal constraint, not a technical barrier. A public repository can still be accessed, copied, or scraped in practice.
+- The project can be made private later. Since no license is granted, previously public code was not intentionally authorized for continued third-party use.
+
 ## Release Tagging
 
 - This repo is a monorepo, but release tags should be package/product specific.
