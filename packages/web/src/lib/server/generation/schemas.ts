@@ -40,6 +40,12 @@ export const providerOptionsSchema = z.object({
 });
 export type ProviderOptions = z.infer<typeof providerOptionsSchema>;
 
+export const requestFingerprintSchema = z
+  .string()
+  .trim()
+  .regex(/^sha256:[a-f0-9]{64}$/);
+export type RequestFingerprint = z.infer<typeof requestFingerprintSchema>;
+
 const fragmentPayloadSchema = z.object({
   id: z.string().trim().optional(),
   title: z.string().trim().optional(),
@@ -72,6 +78,7 @@ export type TitlePayload = z.infer<typeof titlePayloadSchema>;
 
 export const generationInputSchema = z.object({
   id: z.string().trim().min(1),
+  requestFingerprint: requestFingerprintSchema.optional(),
   title: z.string().trim().optional(),
   payload: draftPayloadSchema,
 });
@@ -106,6 +113,7 @@ export type GenerationFollowRequest = z.infer<typeof generationFollowRequestSche
 
 export const titleCreateRequestSchema = z.object({
   id: z.string().trim().min(1),
+  requestFingerprint: requestFingerprintSchema.optional(),
   provider: providerSchema.default("mock"),
   apiKey: z.string().trim().optional(),
   encryptedApiKey: encryptedApiKeySchema.optional(),
@@ -143,6 +151,7 @@ export type GenerationRecord = {
   payload: DraftPayload | TitlePayload;
   output: GenerationOutput | null;
   error: GenerationError | null;
+  requestFingerprint: RequestFingerprint;
   workflowTimeoutMs: number;
   providerTimeoutMs: number;
   finalizationReserveMs: number;

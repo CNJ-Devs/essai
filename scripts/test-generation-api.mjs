@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
 const providerDefaults = {
+  mock: "mock-essai-draft-v1",
   openai: "gpt-5.4-mini",
   deepseek: "deepseek-v4-pro",
   anthropic: "claude-sonnet-5",
@@ -58,6 +60,16 @@ async function main() {
 async function runMockSuite({ baseUrl, keys }) {
   const generationId = `smoke_mock_${Date.now()}`;
   const titleId = `smoke_title_mock_${Date.now()}`;
+  const generationOptions = {
+    maxOutputTokens: 256,
+  };
+  const generationPayload = sampleDraftPayload();
+  const generationInput = withDraftFingerprint({
+    id: generationId,
+    options: generationOptions,
+    payload: generationPayload,
+    provider: "mock",
+  });
 
   console.log("\n[mock] encrypted generation");
   const generation = await postJson(
@@ -65,15 +77,8 @@ async function runMockSuite({ baseUrl, keys }) {
     "/api/generations",
     await encryptRequest(keys, {
       provider: "mock",
-      generations: [
-        {
-          id: generationId,
-          payload: sampleDraftPayload(),
-        },
-      ],
-      options: {
-        maxOutputTokens: 256,
-      },
+      generations: [generationInput],
+      options: generationOptions,
     }),
   );
   assert(generation.ok, "mock generation returned ok=false", generation);
@@ -97,37 +102,70 @@ async function runMockSuite({ baseUrl, keys }) {
       generations: [
         {
           id: generationId,
-          payload: sampleDraftPayload(),
+          payload: generationPayload,
+          requestFingerprint: generationInput.requestFingerprint,
         },
       ],
-      options: {
-        maxOutputTokens: 256,
-      },
+      options: generationOptions,
     }),
     409,
   );
   assert(
-    duplicateGeneration.error?.code === "generation_id_conflict",
-    "duplicate generation id was not rejected as a conflict",
+    duplicateGeneration.error?.code === "generation_request_exists",
+    "duplicate generation id with the same fingerprint was not classified as an existing request",
     duplicateGeneration,
   );
 
+  console.log("[mock] conflicting generation id");
+  const conflictingPayload = sampleDraftPayload({
+    content: "这是另一个不同的请求，用来确认相同 ID 但不同指纹会被当成冲突。",
+  });
+  const conflictingInput = withDraftFingerprint({
+    id: generationId,
+    options: generationOptions,
+    payload: conflictingPayload,
+    provider: "mock",
+  });
+  const conflictingGeneration = await postJsonExpectError(
+    baseUrl,
+    "/api/generations",
+    await encryptRequest(keys, {
+      provider: "mock",
+      generations: [conflictingInput],
+      options: generationOptions,
+    }),
+    409,
+  );
+  assert(
+    conflictingGeneration.error?.code === "generation_id_conflict",
+    "duplicate generation id with a different fingerprint was not rejected as a conflict",
+    conflictingGeneration,
+  );
+
   console.log("[mock] encrypted title");
+  const titlePayload = {
+    fragment: {
+      id: "fragment_smoke",
+      content: "给这条碎片自动生成一个标题。",
+    },
+  };
+  const titleOptions = {
+    maxOutputTokens: 96,
+  };
   const title = await postJson(
     baseUrl,
     "/api/generation-title",
     await encryptRequest(keys, {
       id: titleId,
+      requestFingerprint: titleFingerprint({
+        id: titleId,
+        options: titleOptions,
+        payload: titlePayload,
+        provider: "mock",
+      }),
       provider: "mock",
-      payload: {
-        fragment: {
-          id: "fragment_smoke",
-          content: "给这条碎片自动生成一个标题。",
-        },
-      },
-      options: {
-        maxOutputTokens: 96,
-      },
+      payload: titlePayload,
+      options: titleOptions,
     }),
   );
   assert(title.ok, "mock title returned ok=false", title);
@@ -186,6 +224,17 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
   const generationId = `smoke_${provider.name}_${Date.now()}`;
   const titleId = `smoke_title_${provider.name}_${Date.now()}`;
   const model = provider.model ?? providerDefaults[provider.name];
+  const generationOptions = {
+    maxOutputTokens: 512,
+  };
+  const generationPayload = sampleDraftPayload();
+  const generationInput = withDraftFingerprint({
+    id: generationId,
+    model,
+    options: generationOptions,
+    payload: generationPayload,
+    provider: provider.name,
+  });
 
   console.log(`\n[${provider.name}] encrypted generation (${model})`);
   const generation = await postJson(
@@ -195,15 +244,8 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
       provider: provider.name,
       model,
       encryptedApiKey: await encryptApiKey(keys, provider.apiKey),
-      generations: [
-        {
-          id: generationId,
-          payload: sampleDraftPayload(),
-        },
-      ],
-      options: {
-        maxOutputTokens: 512,
-      },
+      generations: [generationInput],
+      options: generationOptions,
       timeoutMs: 240000,
     }),
   );
@@ -231,6 +273,16 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
   );
 
   console.log(`[${provider.name}] encrypted title (${model})`);
+  const titlePayload = {
+    fragment: {
+      id: "fragment_smoke",
+      content:
+        "今天想到一个点：轻量记录比完整写作更重要，先把念头留下，之后总会找到展开的方法。",
+    },
+  };
+  const titleOptions = {
+    maxOutputTokens: 96,
+  };
   const title = await postJson(
     baseUrl,
     "/api/generation-title",
@@ -238,17 +290,16 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
       id: titleId,
       provider: provider.name,
       model,
+      requestFingerprint: titleFingerprint({
+        id: titleId,
+        model,
+        options: titleOptions,
+        payload: titlePayload,
+        provider: provider.name,
+      }),
       encryptedApiKey: await encryptApiKey(keys, provider.apiKey),
-      payload: {
-        fragment: {
-          id: "fragment_smoke",
-          content:
-            "今天想到一个点：轻量记录比完整写作更重要，先把念头留下，之后总会找到展开的方法。",
-        },
-      },
-      options: {
-        maxOutputTokens: 96,
-      },
+      payload: titlePayload,
+      options: titleOptions,
       timeoutMs: 120000,
     }),
   );
@@ -601,11 +652,89 @@ function parseArgs(argv) {
   return args;
 }
 
-function sampleDraftPayload() {
+function withDraftFingerprint({
+  id,
+  model,
+  options,
+  payload,
+  provider,
+}) {
+  const generation = {
+    id,
+    payload,
+  };
+
+  return {
+    ...generation,
+    requestFingerprint: draftFingerprint({
+      generation,
+      model,
+      options,
+      provider,
+    }),
+  };
+}
+
+function draftFingerprint({ generation, model, options, provider }) {
+  return requestFingerprint({
+    generation: {
+      id: generation.id,
+      payload: generation.payload,
+      title: generation.title ?? null,
+    },
+    kind: "draft",
+    model: model ?? providerDefaults[provider],
+    options,
+    provider,
+    schemaVersion: 1,
+  });
+}
+
+function titleFingerprint({ id, model, options, payload, provider }) {
+  return requestFingerprint({
+    id,
+    kind: "title",
+    model: model ?? providerDefaults[provider],
+    options,
+    payload,
+    provider,
+    schemaVersion: 1,
+  });
+}
+
+function requestFingerprint(value) {
+  return `sha256:${createHash("sha256")
+    .update(stableStringify(value))
+    .digest("hex")}`;
+}
+
+function stableStringify(value) {
+  return JSON.stringify(normalizeStableValue(value));
+}
+
+function normalizeStableValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(normalizeStableValue);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, child]) => child !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, normalizeStableValue(child)]),
+    );
+  }
+
+  return value;
+}
+
+function sampleDraftPayload({ content } = {}) {
   return {
     fragment: {
       id: "fragment_smoke",
       content:
+        content ??
         "今天想到一个点：轻量记录比完整写作更重要。很多时候不是没有想法，而是太早要求自己把想法做完整。",
     },
     scheme: {

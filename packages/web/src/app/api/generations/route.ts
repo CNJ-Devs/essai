@@ -2,6 +2,10 @@ import { z } from "zod";
 import { createExecutionBudget } from "@/lib/server/generation/budget";
 import { parseMaybeEncryptedBody } from "@/lib/server/generation/encryption";
 import { normalizeGenerationError } from "@/lib/server/generation/errors";
+import {
+  assertMatchingRequestFingerprint,
+  buildDraftRequestFingerprint,
+} from "@/lib/server/generation/fingerprint";
 import { resolveProviderApiKey } from "@/lib/server/generation/keys";
 import { callGenerationProvider } from "@/lib/server/generation/provider";
 import { buildDraftGenerationPrompt } from "@/lib/server/generation/prompts";
@@ -47,19 +51,56 @@ export async function POST(request: Request) {
     const model = input.model || providerDefaults[input.provider];
     const expiresAt = new Date(startedAt + input.ttlSeconds * 1000).toISOString();
     const preparedGenerations = await Promise.all(
-      input.generations.map(async (generation) => ({
-        existingRecord: await getGenerationRecord(generation.id),
-        generation,
-      })),
+      input.generations.map(async (generation) => {
+        const requestFingerprint = buildDraftRequestFingerprint({
+          generation,
+          model,
+          options: input.options,
+          provider: input.provider,
+        });
+
+        assertMatchingRequestFingerprint(
+          generation.requestFingerprint,
+          requestFingerprint,
+        );
+
+        return {
+          existingRecord: await getGenerationRecord(generation.id),
+          generation,
+          requestFingerprint,
+        };
+      }),
     );
-    const conflictIds = preparedGenerations.flatMap((item) =>
-      item.existingRecord ? [item.generation.id] : [],
+    const existingGenerations = preparedGenerations.filter(
+      (item) => item.existingRecord,
     );
 
-    if (conflictIds.length > 0) {
+    if (existingGenerations.length > 0) {
+      const sameRequestIds = existingGenerations.flatMap((item) =>
+        item.existingRecord?.requestFingerprint === item.requestFingerprint
+          ? [item.generation.id]
+          : [],
+      );
+      const conflictIds = existingGenerations.flatMap((item) =>
+        item.existingRecord?.requestFingerprint !== item.requestFingerprint
+          ? [item.generation.id]
+          : [],
+      );
+
+      if (conflictIds.length > 0) {
+        return jsonError({
+          code: "generation_id_conflict",
+          details: { ids: conflictIds },
+          message: `Generation id already exists for a different request: ${conflictIds.join(", ")}.`,
+          status: 409,
+          startedAt,
+        });
+      }
+
       return jsonError({
-        code: "generation_id_conflict",
-        message: `Generation id already exists: ${conflictIds.join(", ")}.`,
+        code: "generation_request_exists",
+        details: { ids: sameRequestIds },
+        message: `Generation request already exists: ${sameRequestIds.join(", ")}.`,
         status: 409,
         startedAt,
       });
@@ -73,13 +114,14 @@ export async function POST(request: Request) {
     });
 
     const records = await Promise.all(
-      preparedGenerations.map(async ({ generation }) => {
+      preparedGenerations.map(async ({ generation, requestFingerprint }) => {
         const runningRecord = buildDraftRecord({
           budget,
           expiresAt,
           generation,
           model,
           provider: input.provider,
+          requestFingerprint,
           status: "running",
         });
 
@@ -154,6 +196,7 @@ function buildDraftRecord({
   generation,
   model,
   provider,
+  requestFingerprint,
   status,
 }: {
   budget: ReturnType<typeof createExecutionBudget>;
@@ -161,6 +204,7 @@ function buildDraftRecord({
   generation: GenerationInput;
   model: string;
   provider: GenerationRecord["provider"];
+  requestFingerprint: GenerationRecord["requestFingerprint"];
   status: GenerationRecord["status"];
 }): GenerationRecord {
   const now = new Date().toISOString();
@@ -176,6 +220,7 @@ function buildDraftRecord({
     payload: generation.payload,
     output: null,
     error: null,
+    requestFingerprint,
     workflowTimeoutMs: budget.workflowTimeoutMs,
     providerTimeoutMs: budget.providerTimeoutMs,
     finalizationReserveMs: budget.finalizationReserveMs,
@@ -202,10 +247,12 @@ function jsonError({
   code,
   message,
   providerStatus,
+  details,
   startedAt,
   status,
 }: {
   code: string;
+  details?: unknown;
   message: string;
   providerStatus?: number | null;
   startedAt: number;
@@ -216,6 +263,7 @@ function jsonError({
       ok: false,
       error: {
         code,
+        details: details ?? null,
         message,
         providerStatus: providerStatus ?? null,
       },

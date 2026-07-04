@@ -2,6 +2,10 @@ import { z } from "zod";
 import { createExecutionBudget } from "@/lib/server/generation/budget";
 import { parseMaybeEncryptedBody } from "@/lib/server/generation/encryption";
 import { normalizeGenerationError } from "@/lib/server/generation/errors";
+import {
+  assertMatchingRequestFingerprint,
+  buildTitleRequestFingerprint,
+} from "@/lib/server/generation/fingerprint";
 import { resolveProviderApiKey } from "@/lib/server/generation/keys";
 import { callGenerationProvider } from "@/lib/server/generation/provider";
 import {
@@ -48,12 +52,27 @@ export async function POST(request: Request) {
     const budget = createExecutionBudget(startedAt, input.timeoutMs);
     const model = input.model || providerDefaults[input.provider];
     const expiresAt = new Date(startedAt + input.ttlSeconds * 1000).toISOString();
+    const requestFingerprint = buildTitleRequestFingerprint({ input, model });
+
+    assertMatchingRequestFingerprint(input.requestFingerprint, requestFingerprint);
+
     const existingRecord = await getGenerationRecord(input.id);
 
     if (existingRecord) {
+      if (existingRecord.requestFingerprint === requestFingerprint) {
+        return jsonError({
+          code: "generation_request_exists",
+          details: { ids: [input.id] },
+          message: `Generation request already exists: ${input.id}.`,
+          status: 409,
+          startedAt,
+        });
+      }
+
       return jsonError({
         code: "generation_id_conflict",
-        message: `Generation id already exists: ${input.id}.`,
+        details: { ids: [input.id] },
+        message: `Generation id already exists for a different request: ${input.id}.`,
         status: 409,
         startedAt,
       });
@@ -70,6 +89,7 @@ export async function POST(request: Request) {
       expiresAt,
       input,
       model,
+      requestFingerprint,
       status: "running",
     });
 
@@ -151,12 +171,14 @@ function buildTitleRecord({
   expiresAt,
   input,
   model,
+  requestFingerprint,
   status,
 }: {
   budget: ReturnType<typeof createExecutionBudget>;
   expiresAt: string;
   input: z.infer<typeof titleCreateRequestSchema>;
   model: string;
+  requestFingerprint: GenerationRecord["requestFingerprint"];
   status: GenerationRecord["status"];
 }): GenerationRecord {
   const now = new Date().toISOString();
@@ -172,6 +194,7 @@ function buildTitleRecord({
     payload: input.payload,
     output: null,
     error: null,
+    requestFingerprint,
     workflowTimeoutMs: budget.workflowTimeoutMs,
     providerTimeoutMs: budget.providerTimeoutMs,
     finalizationReserveMs: budget.finalizationReserveMs,
@@ -198,10 +221,12 @@ function jsonError({
   code,
   message,
   providerStatus,
+  details,
   startedAt,
   status,
 }: {
   code: string;
+  details?: unknown;
   message: string;
   providerStatus?: number | null;
   startedAt: number;
@@ -212,6 +237,7 @@ function jsonError({
       ok: false,
       error: {
         code,
+        details: details ?? null,
         message,
         providerStatus: providerStatus ?? null,
       },
