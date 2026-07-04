@@ -12,12 +12,31 @@ export async function parseMaybeEncryptedBody<T>(
   schema: z.ZodType<T>,
 ) {
   const encrypted = encryptedRequestSchema.safeParse(body);
+  const localEnvironment = isLocalGenerationEnvironment();
 
-  if (encrypted.success) {
-    return schema.safeParse(await decryptRequestPayload(encrypted.data));
+  if (localEnvironment) {
+    if (encrypted.success) {
+      throw new GenerationRequestError(
+        "plaintext_request_required",
+        "Encrypted generation requests are not accepted in local environment.",
+        400,
+        400,
+      );
+    }
+
+    return schema.safeParse(body);
   }
 
-  return schema.safeParse(body);
+  if (!encrypted.success) {
+    throw new GenerationRequestError(
+      "encrypted_request_required",
+      "Plaintext generation requests are not accepted outside local environment.",
+      400,
+      400,
+    );
+  }
+
+  return schema.safeParse(await decryptRequestPayload(encrypted.data));
 }
 
 export async function decryptApiKey(encryptedApiKey: EncryptedApiKey) {
@@ -43,6 +62,24 @@ export async function decryptApiKey(encryptedApiKey: EncryptedApiKey) {
       400,
     );
   }
+}
+
+export function isLocalGenerationEnvironment() {
+  const vercelEnv = process.env.VERCEL_ENV?.trim();
+  const vercelTargetEnv = process.env.VERCEL_TARGET_ENV?.trim();
+  const isVercelRuntime =
+    process.env.VERCEL === "1" ||
+    Boolean(
+      process.env.VERCEL_URL ||
+        process.env.VERCEL_REGION ||
+        process.env.VERCEL_DEPLOYMENT_ID,
+    );
+
+  if (!isVercelRuntime) {
+    return true;
+  }
+
+  return vercelEnv === "development" || vercelTargetEnv === "development";
 }
 
 async function decryptRequestPayload(envelope: EncryptedRequest) {

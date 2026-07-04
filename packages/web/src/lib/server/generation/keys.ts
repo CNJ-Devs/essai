@@ -1,5 +1,5 @@
 import type { EncryptedApiKey, Provider } from "./schemas";
-import { decryptApiKey } from "./encryption";
+import { decryptApiKey, isLocalGenerationEnvironment } from "./encryption";
 import { GenerationRequestError } from "./errors";
 
 export async function resolveProviderApiKey({
@@ -15,6 +15,15 @@ export async function resolveProviderApiKey({
 }) {
   if (encryptedApiKey) {
     return decryptApiKey(encryptedApiKey);
+  }
+
+  if (!isLocalGenerationEnvironment()) {
+    throw new GenerationRequestError(
+      "encrypted_api_key_required",
+      `Encrypted API key is required for ${provider} outside local environment.`,
+      400,
+      400,
+    );
   }
 
   const auth = request.headers.get("authorization");

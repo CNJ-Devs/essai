@@ -33,19 +33,18 @@ async function main() {
 
   const port = await choosePort(args.port ?? 3010);
   const baseUrl = `http://localhost:${port}`;
-  const keys = await createEncryptionKeys();
   if (args.build || (!args.skipBuild && !hasProductionBuild())) {
     await buildWeb();
   } else {
     console.log("Using existing @essai/web production build.");
   }
-  const server = await startServer({ keys, port });
+  const server = await startServer({ port });
 
   try {
     console.log(`Generation API smoke server: ${baseUrl}`);
 
     for (const provider of providers) {
-      await runProviderSuite({ baseUrl, keys, provider });
+      await runProviderSuite({ baseUrl, provider });
     }
 
     console.log("\nAll generation API smoke tests passed.");
@@ -54,7 +53,7 @@ async function main() {
   }
 }
 
-async function runProviderSuite({ baseUrl, keys, provider }) {
+async function runProviderSuite({ baseUrl, provider }) {
   const generationId = `smoke_${provider.name}_${Date.now()}`;
   const titleId = `smoke_title_${provider.name}_${Date.now()}`;
   const model = provider.model ?? providerDefaults[provider.name];
@@ -70,18 +69,18 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
     provider: provider.name,
   });
 
-  console.log(`\n[${provider.name}] encrypted generation (${model})`);
+  console.log(`\n[${provider.name}] plaintext local generation (${model})`);
   const generation = await postJson(
     baseUrl,
     "/api/generations",
-    await encryptRequest(keys, {
+    {
       provider: provider.name,
       model,
-      encryptedApiKey: await encryptApiKey(keys, provider.apiKey),
+      apiKey: provider.apiKey,
       generations: [generationInput],
       options: generationOptions,
       timeoutMs: 240000,
-    }),
+    },
   );
   assert(generation.ok, `${provider.name} generation returned ok=false`, generation);
   assert(
@@ -100,12 +99,13 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
   const duplicateGeneration = await postJsonExpectError(
     baseUrl,
     "/api/generations",
-    await encryptRequest(keys, {
+    {
       provider: provider.name,
       model,
+      apiKey: provider.apiKey,
       generations: [generationInput],
       options: generationOptions,
-    }),
+    },
     409,
   );
   assert(
@@ -128,12 +128,13 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
   const conflictingGeneration = await postJsonExpectError(
     baseUrl,
     "/api/generations",
-    await encryptRequest(keys, {
+    {
       provider: provider.name,
       model,
+      apiKey: provider.apiKey,
       generations: [conflictingInput],
       options: generationOptions,
-    }),
+    },
     409,
   );
   assert(
@@ -152,7 +153,7 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
     pulledGeneration,
   );
 
-  console.log(`[${provider.name}] encrypted title (${model})`);
+  console.log(`[${provider.name}] plaintext local title (${model})`);
   const titlePayload = {
     fragment: {
       id: "fragment_smoke",
@@ -166,7 +167,7 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
   const title = await postJson(
     baseUrl,
     "/api/generation-title",
-    await encryptRequest(keys, {
+    {
       id: titleId,
       provider: provider.name,
       model,
@@ -177,11 +178,11 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
         payload: titlePayload,
         provider: provider.name,
       }),
-      encryptedApiKey: await encryptApiKey(keys, provider.apiKey),
+      apiKey: provider.apiKey,
       payload: titlePayload,
       options: titleOptions,
       timeoutMs: 120000,
-    }),
+    },
   );
   assert(title.ok, `${provider.name} title returned ok=false`, title);
   assert(title.record?.status === "succeeded", `${provider.name} title did not succeed`, title);
@@ -225,7 +226,7 @@ async function runProviderSuite({ baseUrl, keys, provider }) {
   assert(cleaned.deletedCount === 2, "cleanup deleted unexpected count", cleaned);
 }
 
-async function startServer({ keys, port }) {
+async function startServer({ port }) {
   const child = spawn(
     "npm",
     ["--workspace", "@essai/web", "run", "start", "--", "--port", String(port)],
@@ -233,8 +234,6 @@ async function startServer({ keys, port }) {
       cwd: repoRoot,
       env: {
         ...process.env,
-        API_KEY_ENCRYPTION_PRIVATE_JWK: JSON.stringify(keys.apiPrivateJwk),
-        REQUEST_ENCRYPTION_PRIVATE_JWK: JSON.stringify(keys.requestPrivateJwk),
         NEXT_TELEMETRY_DISABLED: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -413,75 +412,6 @@ function parseSseEvent(block) {
     data: dataLines.length > 0 ? parseJson(dataLines.join("\n")) : null,
     event: eventLine ? eventLine.slice(6).trim() : "message",
   };
-}
-
-async function createEncryptionKeys() {
-  const [apiPair, requestPair] = await Promise.all([rsaPair(), rsaPair()]);
-
-  return {
-    apiPrivateJwk: await crypto.subtle.exportKey("jwk", apiPair.privateKey),
-    apiPublicKey: apiPair.publicKey,
-    requestPrivateJwk: await crypto.subtle.exportKey("jwk", requestPair.privateKey),
-    requestPublicKey: requestPair.publicKey,
-  };
-}
-
-async function encryptRequest(keys, innerRequest) {
-  const aesKey = await crypto.subtle.generateKey(
-    { name: "AES-GCM", length: 256 },
-    true,
-    ["encrypt", "decrypt"],
-  );
-  const aesRaw = await crypto.subtle.exportKey("raw", aesKey);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
-    aesKey,
-    new TextEncoder().encode(JSON.stringify(innerRequest)),
-  );
-  const encryptedKey = await crypto.subtle.encrypt(
-    { name: "RSA-OAEP" },
-    keys.requestPublicKey,
-    aesRaw,
-  );
-
-  return {
-    schemaVersion: 1,
-    encryptedRequest: {
-      alg: "A256GCM+RSA-OAEP-256",
-      encryptedKey: toBase64Url(encryptedKey),
-      iv: toBase64Url(iv),
-      ciphertext: toBase64Url(ciphertext),
-      encoding: "base64url",
-    },
-  };
-}
-
-async function encryptApiKey(keys, apiKey) {
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: "RSA-OAEP" },
-    keys.apiPublicKey,
-    new TextEncoder().encode(apiKey),
-  );
-
-  return {
-    alg: "RSA-OAEP-256",
-    ciphertext: toBase64Url(ciphertext),
-    encoding: "base64url",
-  };
-}
-
-async function rsaPair() {
-  return crypto.subtle.generateKey(
-    {
-      name: "RSA-OAEP",
-      modulusLength: 2048,
-      publicExponent: new Uint8Array([1, 0, 1]),
-      hash: "SHA-256",
-    },
-    true,
-    ["encrypt", "decrypt"],
-  );
 }
 
 async function choosePort(preferredPort) {
@@ -692,10 +622,6 @@ function withDetails(message, details) {
   const error = new Error(message);
   error.details = details;
   return error;
-}
-
-function toBase64Url(value) {
-  return Buffer.from(value).toString("base64url");
 }
 
 function camelCase(value) {
