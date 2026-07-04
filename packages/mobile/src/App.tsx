@@ -12,7 +12,15 @@ import relativeTime from "dayjs/plugin/relativeTime";
 import "dayjs/locale/zh-cn";
 import i18next from "i18next";
 import JSZip from "jszip";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   createNavigationContainerRef,
   NavigationContainer,
@@ -23,6 +31,8 @@ import Carousel, { type ICarouselInstance } from "react-native-reanimated-carous
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import type {
   KeyboardEvent,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
   StyleProp,
   ViewStyle,
 } from "react-native";
@@ -2597,19 +2607,33 @@ function useStackDetailPadding(extraBottom = 0) {
 
 function DetailScrollView({
   children,
+  extraBottom = 0,
+  keyboardDismissMode,
   keyboardShouldPersistTaps,
+  onScroll,
+  scrollEventThrottle,
+  scrollRef,
 }: {
   children: ReactNode;
+  extraBottom?: number;
+  keyboardDismissMode?: "none" | "interactive" | "on-drag";
   keyboardShouldPersistTaps?: "always" | "never" | "handled";
+  onScroll?: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
+  scrollEventThrottle?: number;
+  scrollRef?: RefObject<ScrollView | null>;
 }) {
-  const detailPadding = useStackDetailPadding();
+  const detailPadding = useStackDetailPadding(extraBottom);
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={styles.detailScroll}
       automaticallyAdjustKeyboardInsets
       contentContainerStyle={[styles.detailInner, detailPadding]}
+      keyboardDismissMode={keyboardDismissMode}
       keyboardShouldPersistTaps={keyboardShouldPersistTaps}
+      onScroll={onScroll}
+      scrollEventThrottle={scrollEventThrottle}
       showsVerticalScrollIndicator={false}
     >
       {children}
@@ -2629,17 +2653,21 @@ function useFormTextAreaHeight(scale: number, min: number, max: number) {
   return Math.round(Math.min(max, Math.max(min, windowHeight * scale)));
 }
 
-function useKeyboardHeight() {
+function useKeyboardHeight(options?: { useEventHeightOnAndroid?: boolean }) {
   const { height: windowHeight } = useWindowDimensions();
+  const useEventHeightOnAndroid = options?.useEventHeightOnAndroid ?? false;
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   useEffect(() => {
     function updateHeight(event: KeyboardEvent) {
       const screenY = event.endCoordinates?.screenY;
+      const eventHeight = event.endCoordinates?.height ?? 0;
       const nextHeight =
-        typeof screenY === "number"
+        Platform.OS === "android" && useEventHeightOnAndroid
+          ? eventHeight
+          : typeof screenY === "number"
           ? Math.max(0, windowHeight - screenY)
-          : (event.endCoordinates?.height ?? 0);
+          : eventHeight;
 
       setKeyboardHeight(Math.round(nextHeight));
     }
@@ -2662,9 +2690,119 @@ function useKeyboardHeight() {
     return () => {
       subscriptions.forEach((subscription) => subscription.remove());
     };
-  }, [windowHeight]);
+  }, [useEventHeightOnAndroid, windowHeight]);
 
   return keyboardHeight;
+}
+
+function useAndroidKeyboardFrame() {
+  const { height: windowHeight } = useWindowDimensions();
+  const [keyboardFrame, setKeyboardFrame] = useState({
+    height: 0,
+    top: windowHeight,
+  });
+
+  useEffect(() => {
+    if (Platform.OS !== "android") {
+      return undefined;
+    }
+
+    function updateFrame(event: KeyboardEvent) {
+      const height = event.endCoordinates?.height ?? 0;
+      const screenY = event.endCoordinates?.screenY;
+      const top =
+        typeof screenY === "number"
+          ? screenY
+          : Math.max(0, windowHeight - height);
+
+      setKeyboardFrame({ height: Math.round(height), top: Math.round(top) });
+    }
+
+    function resetFrame() {
+      setKeyboardFrame({ height: 0, top: windowHeight });
+    }
+
+    const subscriptions = [
+      Keyboard.addListener("keyboardDidShow", updateFrame),
+      Keyboard.addListener("keyboardDidHide", resetFrame),
+    ];
+
+    return () => {
+      subscriptions.forEach((subscription) => subscription.remove());
+    };
+  }, [windowHeight]);
+
+  return keyboardFrame;
+}
+
+function useAndroidCoveredInputScrollGuard() {
+  const scrollRef = useRef<ScrollView | null>(null);
+  const scrollOffsetYRef = useRef(0);
+  const focusedInputRef = useRef<TextInput | null>(null);
+  const keyboardFrame = useAndroidKeyboardFrame();
+
+  const ensureFocusedInputVisible = useCallback(
+    (input = focusedInputRef.current) => {
+      if (Platform.OS !== "android" || keyboardFrame.height <= 0 || !input) {
+        return;
+      }
+
+      input.measureInWindow((_x, y, _width, height) => {
+        const keyboardTop = keyboardFrame.top;
+        const inputBottom = y + height;
+        const visibilityMargin = 20;
+        const safeInputBottom = keyboardTop - visibilityMargin;
+        const scrollDelta = Math.ceil(inputBottom - safeInputBottom);
+
+        if (scrollDelta <= 0) {
+          return;
+        }
+
+        scrollRef.current?.scrollTo({
+          animated: true,
+          y: Math.max(0, scrollOffsetYRef.current + scrollDelta),
+        });
+      });
+    },
+    [keyboardFrame.height, keyboardFrame.top],
+  );
+
+  useEffect(() => {
+    if (keyboardFrame.height <= 0) {
+      return;
+    }
+
+    const timeout = setTimeout(() => ensureFocusedInputVisible(), 60);
+
+    return () => clearTimeout(timeout);
+  }, [ensureFocusedInputVisible, keyboardFrame.height]);
+
+  const handleScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      scrollOffsetYRef.current = event.nativeEvent.contentOffset.y;
+    },
+    [],
+  );
+
+  const handleInputFocus = useCallback(
+    (input: TextInput | null) => {
+      if (Platform.OS !== "android") {
+        return;
+      }
+
+      focusedInputRef.current = input;
+      requestAnimationFrame(() => ensureFocusedInputVisible(input));
+      setTimeout(() => ensureFocusedInputVisible(input), 260);
+    },
+    [ensureFocusedInputVisible],
+  );
+
+  return {
+    handleInputFocus,
+    handleScroll,
+    keyboardHeight: keyboardFrame.height,
+    scrollRef,
+  };
 }
 
 function useFloatingActionBottom(gap = 14) {
@@ -3075,9 +3213,28 @@ function ModelSettings({
   onChangeProviderKey: (providerId: ProviderId, value: string) => void;
   onToggleModelMenu: () => void;
 }) {
+  const providerInputRefs = useRef<Partial<Record<ProviderId, TextInput | null>>>(
+    {},
+  );
+  const {
+    handleInputFocus,
+    handleScroll,
+    keyboardHeight,
+    scrollRef,
+  } = useAndroidCoveredInputScrollGuard();
+  const modelSettingsBottomPadding =
+    Platform.OS === "android" ? keyboardHeight : 0;
+
   return (
     <StackScreenSurface>
-      <DetailScrollView keyboardShouldPersistTaps="handled">
+      <DetailScrollView
+        extraBottom={modelSettingsBottomPadding}
+        keyboardDismissMode={Platform.OS === "android" ? "none" : undefined}
+        keyboardShouldPersistTaps="handled"
+        onScroll={handleScroll}
+        scrollEventThrottle={16}
+        scrollRef={scrollRef}
+      >
         <Text style={styles.settingsLead}>
           {tx("pages.settings.modelLead")}
         </Text>
@@ -3163,11 +3320,17 @@ function ModelSettings({
                   autoCorrect={false}
                   placeholder={provider.keyPlaceholder}
                   placeholderTextColor={colors.muted}
+                  ref={(input) => {
+                    providerInputRefs.current[provider.id] = input;
+                  }}
                   secureTextEntry
                   style={styles.settingsInput}
                   value={providerKeys[provider.id]}
                   onChangeText={(value) =>
                     onChangeProviderKey(provider.id, value)
+                  }
+                  onFocus={() =>
+                    handleInputFocus(providerInputRefs.current[provider.id] ?? null)
                   }
                 />
               </View>
