@@ -3,6 +3,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
+import * as SQLite from "expo-sqlite";
 import * as SystemUI from "expo-system-ui";
 import dayjs from "dayjs";
 import calendar from "dayjs/plugin/calendar";
@@ -100,8 +101,8 @@ const androidSystemBarModalProps =
 
 type Scheme = {
   id: string;
-  name: string;
-  description: string;
+  title: string;
+  content: string;
   lawIds: string[];
   createdAt: string;
   updatedAt: string;
@@ -109,7 +110,7 @@ type Scheme = {
 
 type Law = {
   id: string;
-  name: string;
+  title: string;
   content: string;
   tags: string[];
   createdAt: string;
@@ -121,13 +122,12 @@ type DraftVersion = {
   versionNo: number;
   content: string;
   createdAt: string;
-  status: "completed" | "brewing" | "failed";
+  status: "completed" | "brewing" | "failed" | "expired";
 };
 
 type Draft = {
   id: string;
   schemeId: string;
-  schemeName: string;
   versions: DraftVersion[];
 };
 
@@ -199,6 +199,7 @@ type PersistedMobileSettings = {
 };
 
 type BackupDataPayload = {
+  schemaVersion: 1;
   fragments: FragmentItem[];
   laws: Law[];
   schemes: Scheme[];
@@ -212,6 +213,9 @@ type ParsedBackupBundle = {
 };
 
 const mobileSettingsStorageKey = "essai.mobile.settings.v1";
+const backupDataSchemaVersion = 1;
+const workspaceDatabaseName = "essai-workspace.db";
+const workspaceSchemaVersion = 3;
 
 const mobileResources = {
   "zh-Hans": {
@@ -257,6 +261,7 @@ const mobileResources = {
       status: {
         brewing: "生成中",
         failed: "失败",
+        expired: "已失效",
         completed: "已成稿",
       },
       pages: {
@@ -425,6 +430,7 @@ const mobileResources = {
         namePlaceholder: "例如：日常分享、读书感想、短视频口播...",
         descriptionLabel: "说明",
         descriptionPlaceholder: "例如：适合把零散想法整理成一段自然的分享。语气轻松一点，有自己的判断，不要太像正式文章...",
+        createTitleFallback: "新方案",
         lawsLabel: "创作法则",
         lawsDescription: "从创作法典里挑选要引用的法则，也可以在这里新增。",
         noLawsTitle: "还没有可选法则",
@@ -439,6 +445,7 @@ const mobileResources = {
         description: "一条法则就是一条可复用的创作判断。出稿时，它会和方案一起影响内容的取舍、语气和结构。",
         nameLabel: "名称",
         namePlaceholder: "例如：黄金三秒...",
+        createTitleFallback: "新法则",
         contentLabel: "内容",
         contentPlaceholder: "例如：开头 3 秒内必须让观众知道这条内容和自己有什么关系...",
         tagLabel: "标签",
@@ -501,6 +508,7 @@ const mobileResources = {
       status: {
         brewing: "Generating",
         failed: "Failed",
+        expired: "Expired",
         completed: "Ready",
       },
       pages: {
@@ -669,6 +677,7 @@ const mobileResources = {
         namePlaceholder: "For example: Daily Share, Reading Notes, Short Video Script...",
         descriptionLabel: "Description",
         descriptionPlaceholder: "For example: Turn scattered thoughts into a natural post with a relaxed voice and a clear judgment...",
+        createTitleFallback: "New Scheme",
         lawsLabel: "Creative Rules",
         lawsDescription: "Pick rules from the Codex, or add one here.",
         noLawsTitle: "No rules available",
@@ -683,6 +692,7 @@ const mobileResources = {
         description: "A rule is a reusable creative judgment. It shapes what the draft keeps, removes, and emphasizes.",
         nameLabel: "Name",
         namePlaceholder: "For example: First Three Seconds...",
+        createTitleFallback: "New Rule",
         contentLabel: "Content",
         contentPlaceholder: "For example: The first 3 seconds must show why this matters to the audience...",
         tagLabel: "Tag",
@@ -982,6 +992,26 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
 
+    readPersistedWorkspaceData()
+      .then((data) => {
+        if (!mounted) return;
+
+        setFragments(data.fragments);
+        setLaws(data.laws);
+        setSchemes(data.schemes);
+      })
+      .catch(() => {
+        // A broken local database should not prevent the app shell from opening.
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
     readPersistedMobileSettings()
       .then((parsed) => {
         if (!parsed) return;
@@ -1042,7 +1072,7 @@ export default function App() {
     }
   }, [activeModelId, availableModels]);
 
-  function collectFragment(content: string, selection: SchemeSelection) {
+  async function collectFragment(content: string, selection: SchemeSelection) {
     const createdAt = new Date().toISOString();
     const title = createFragmentTitle(content);
     const pickedSchemes = schemes.flatMap((scheme) => {
@@ -1066,39 +1096,61 @@ export default function App() {
       ),
     };
 
+    await insertPersistedFragment(fragment);
     setFragments((current) => [fragment, ...current]);
     setComposeOpen(false);
     return fragment.id;
   }
 
-  function updateFragmentContent(fragmentId: string, content: string) {
+  async function updateFragmentContent(fragmentId: string, content: string) {
+    const updatedAt = new Date().toISOString();
+
+    await updatePersistedFragmentContent(fragmentId, content, updatedAt);
     setFragments((current) =>
       current.map((fragment) =>
         fragment.id === fragmentId
-          ? { ...fragment, content, updatedAt: new Date().toISOString() }
+          ? { ...fragment, content, updatedAt }
           : fragment,
       ),
     );
   }
 
-  function deleteFragment(fragmentId: string) {
+  async function deleteFragment(fragmentId: string) {
+    await deletePersistedFragment(fragmentId);
     setFragments((current) =>
       current.filter((fragment) => fragment.id !== fragmentId),
     );
   }
 
-  function saveScheme(name: string, description: string, lawIds: string[]) {
+  async function saveScheme(title: string, content: string, lawIds: string[]) {
     const now = new Date().toISOString();
+    const safeTitle = title.trim() || tx("schemeEditor.createTitleFallback");
+    const safeContent = content.trim();
 
     if (editingSchemeId) {
       const savedId = editingSchemeId;
+      const savedScheme = schemes.find((scheme) => scheme.id === editingSchemeId);
+      const nextScheme = savedScheme
+        ? {
+            ...savedScheme,
+            title: safeTitle,
+            content: safeContent,
+            lawIds,
+            updatedAt: now,
+          }
+        : null;
+
+      if (nextScheme) {
+        await upsertPersistedScheme(nextScheme);
+      }
+
       setSchemes((current) =>
         current.map((scheme) =>
           scheme.id === editingSchemeId
             ? {
                 ...scheme,
-                name,
-                description,
+                title: safeTitle,
+                content: safeContent,
                 lawIds,
                 updatedAt: now,
               }
@@ -1111,12 +1163,13 @@ export default function App() {
     } else {
       const scheme: Scheme = {
         id: createId("scheme"),
-        name,
-        description,
+        title: safeTitle,
+        content: safeContent,
         lawIds,
         createdAt: now,
         updatedAt: now,
       };
+      await upsertPersistedScheme(scheme);
       setSchemes((current) => [scheme, ...current]);
       setSchemeEditorOpen(false);
       setEditingSchemeId(null);
@@ -1124,37 +1177,56 @@ export default function App() {
     }
   }
 
-  function createLawFromSchemeEditor(
-    name: string,
+  async function createLawFromSchemeEditor(
+    title: string,
     content: string,
     tags: string[],
   ) {
     const now = new Date().toISOString();
+    const safeTitle = title.trim() || tx("lawEditor.createTitleFallback");
     const law: Law = {
       id: createId("law"),
-      name,
+      title: safeTitle,
       content,
       tags,
       createdAt: now,
       updatedAt: now,
     };
 
+    await upsertPersistedLaw(law);
     setLaws((current) => [law, ...current]);
     return law;
   }
 
-  function saveLaw(name: string, content: string, tags: string[]) {
+  async function saveLaw(title: string, content: string, tags: string[]) {
     const now = new Date().toISOString();
+    const safeTitle = title.trim() || tx("lawEditor.createTitleFallback");
+    const safeContent = content.trim();
 
     if (editingLawId) {
       const savedId = editingLawId;
+      const savedLaw = laws.find((law) => law.id === editingLawId);
+      const nextLaw = savedLaw
+        ? {
+            ...savedLaw,
+            title: safeTitle,
+            content: safeContent,
+            tags,
+            updatedAt: now,
+          }
+        : null;
+
+      if (nextLaw) {
+        await upsertPersistedLaw(nextLaw);
+      }
+
       setLaws((current) =>
         current.map((law) =>
           law.id === editingLawId
             ? {
                 ...law,
-                name,
-                content,
+                title: safeTitle,
+                content: safeContent,
                 tags,
                 updatedAt: now,
               }
@@ -1167,12 +1239,13 @@ export default function App() {
     } else {
       const law: Law = {
         id: createId("law"),
-        name,
-        content,
+        title: safeTitle,
+        content: safeContent,
         tags,
         createdAt: now,
         updatedAt: now,
       };
+      await upsertPersistedLaw(law);
       setLaws((current) => [law, ...current]);
       setLawEditorOpen(false);
       setEditingLawId(null);
@@ -1180,11 +1253,19 @@ export default function App() {
     }
   }
 
-  function deleteScheme(schemeId: string) {
+  async function deleteScheme(schemeId: string) {
+    await deletePersistedScheme(schemeId);
     setSchemes((current) => current.filter((scheme) => scheme.id !== schemeId));
+    setFragments((current) =>
+      current.map((fragment) => ({
+        ...fragment,
+        drafts: fragment.drafts.filter((draft) => draft.schemeId !== schemeId),
+      })),
+    );
   }
 
-  function deleteLaw(lawId: string) {
+  async function deleteLaw(lawId: string) {
+    await deletePersistedLaw(lawId);
     setLaws((current) => current.filter((law) => law.id !== lawId));
     setSchemes((current) =>
       current.map((scheme) => ({
@@ -1194,31 +1275,51 @@ export default function App() {
     );
   }
 
-  function addDraft(fragmentId: string, scheme: Scheme, count: Count | number = 1) {
+  async function addDraft(fragmentId: string, scheme: Scheme, count: Count | number = 1) {
+    const fragment = fragments.find((item) => item.id === fragmentId);
+
+    if (!fragment) return;
+
+    const now = new Date().toISOString();
+    const safeCount = Math.min(3, Math.max(1, Math.floor(count)));
+    const existingDraft = fragment.drafts.find(
+      (draft) => draft.schemeId === scheme.id,
+    );
+
+    if (!existingDraft) {
+      const draft = createDraft({
+        scheme,
+        fragmentContent: fragment.content,
+        count: safeCount,
+      });
+
+      await insertPersistedDraft(fragmentId, draft, now);
+      setFragments((current) =>
+        current.map((item) =>
+          item.id === fragmentId
+            ? {
+                ...item,
+                updatedAt: now,
+                drafts: [draft, ...item.drafts],
+              }
+            : item,
+        ),
+      );
+      return;
+    }
+
+    const versions = Array.from({ length: safeCount }, (_, index) =>
+      createDraftVersion({
+        scheme,
+        fragmentContent: fragment.content,
+        versionNo: existingDraft.versions.length + index + 1,
+      }),
+    );
+
+    await insertPersistedDraftVersions(fragmentId, existingDraft.id, versions);
     setFragments((current) =>
       current.map((fragment) => {
         if (fragment.id !== fragmentId) return fragment;
-
-        const now = new Date().toISOString();
-        const safeCount = Math.min(3, Math.max(1, Math.floor(count)));
-        const existingDraft = fragment.drafts.find(
-          (draft) => draft.schemeId === scheme.id,
-        );
-
-        if (!existingDraft) {
-          return {
-            ...fragment,
-            updatedAt: now,
-            drafts: [
-              createDraft({
-                scheme,
-                fragmentContent: fragment.content,
-                count: safeCount,
-              }),
-              ...fragment.drafts,
-            ],
-          };
-        }
 
         return {
           ...fragment,
@@ -1228,20 +1329,12 @@ export default function App() {
               draft.id === existingDraft.id
                 ? {
                     ...draft,
-                    versions: [
-                      ...draft.versions,
-                      ...Array.from({ length: safeCount }, (_, index) =>
-                        createDraftVersion({
-                          scheme,
-                          fragmentContent: fragment.content,
-                          versionNo: draft.versions.length + index + 1,
-                        }),
-                      ),
-                    ],
+                    versions: [...draft.versions, ...versions],
                   }
                 : draft,
             )
-            .toSorted(
+            .slice()
+            .sort(
               (a, b) =>
                 new Date(latestDraftVersion(b)?.createdAt ?? 0).getTime() -
                 new Date(latestDraftVersion(a)?.createdAt ?? 0).getTime(),
@@ -1251,11 +1344,12 @@ export default function App() {
     );
   }
 
-  function appendDraftVersion(
+  async function appendDraftVersion(
     fragmentId: string,
     draftId: string,
     version: DraftVersion,
   ) {
+    await insertPersistedDraftVersions(fragmentId, draftId, [version]);
     setFragments((current) =>
       current.map((fragment) => {
         if (fragment.id !== fragmentId) return fragment;
@@ -1276,13 +1370,14 @@ export default function App() {
     );
   }
 
-  function deleteDraftVersion(
+  async function deleteDraftVersion(
     fragmentId: string,
     draftId: string,
     versionId: string,
   ) {
     const now = new Date().toISOString();
 
+    await deletePersistedDraftVersion(draftId, versionId, now);
     setFragments((current) =>
       current.map((fragment) => {
         if (fragment.id !== fragmentId) return fragment;
@@ -1521,7 +1616,12 @@ export default function App() {
           >
             {() => (
               <ExportSettings
-                data={{ fragments, laws, schemes }}
+                data={{
+                  schemaVersion: backupDataSchemaVersion,
+                  fragments,
+                  laws,
+                  schemes,
+                }}
                 settings={{ activeModelId, languageId, themeId, version: 1 }}
               />
             )}
@@ -1544,6 +1644,9 @@ export default function App() {
                   setFragments(data.fragments);
                   setLaws(data.laws);
                   setSchemes(data.schemes);
+                  void replacePersistedWorkspaceData(data).catch(
+                    () => undefined,
+                  );
                 }}
                 onImportSettings={(settings) => {
                   if (isThemeId(settings.themeId)) {
@@ -1616,8 +1719,8 @@ export default function App() {
                   fragment={fragment}
                   schemes={schemes}
                   onAddDraft={addDraft}
-                  onDelete={() => {
-                    deleteFragment(fragment.id);
+                  onDelete={async () => {
+                    await deleteFragment(fragment.id);
                     navigation.goBack();
                   }}
                   onOpenDraft={(draftId) =>
@@ -1641,12 +1744,15 @@ export default function App() {
               const draft = fragment?.drafts.find(
                 (item) => item.id === route.params.draftId,
               );
+              const scheme = draft
+                ? schemes.find((item) => item.id === draft.schemeId)
+                : undefined;
 
               return {
                 headerTitle: () => (
                   <NavigationHeaderTitle
                     description={fragment?.title ?? tx("nav.backHint")}
-                    title={draft?.schemeName ?? tx("pages.drafts.missingTitle")}
+                    title={scheme?.title ?? tx("pages.drafts.missingTitle")}
                   />
                 ),
               };
@@ -1676,30 +1782,30 @@ export default function App() {
                   draft={draft}
                   laws={boundLaws}
                   scheme={scheme}
-                  onDeleteVersion={(versionId) => {
+                  onDeleteVersion={async (versionId) => {
                     const shouldLeave = draft.versions.length <= 1;
 
-                    deleteDraftVersion(fragment.id, draft.id, versionId);
+                    await deleteDraftVersion(fragment.id, draft.id, versionId);
 
                     if (shouldLeave) {
                       navigation.goBack();
                     }
                   }}
-                  onEditVersion={(content) => {
+                  onEditVersion={async (content) => {
                     const version = createDraftVersionFromContent({
                       content,
                       versionNo: draft.versions.length + 1,
                     });
 
-                    appendDraftVersion(fragment.id, draft.id, version);
+                    await appendDraftVersion(fragment.id, draft.id, version);
                     return version.id;
                   }}
-                  onGenerate={() => {
+                  onGenerate={async () => {
                     if (scheme) {
-                      addDraft(fragment.id, scheme);
+                      await addDraft(fragment.id, scheme);
                     }
                   }}
-                  onRetryVersion={() => {
+                  onRetryVersion={async () => {
                     if (!scheme) return null;
 
                     const version = createDraftVersion({
@@ -1708,7 +1814,7 @@ export default function App() {
                       versionNo: draft.versions.length + 1,
                     });
 
-                    appendDraftVersion(fragment.id, draft.id, version);
+                    await appendDraftVersion(fragment.id, draft.id, version);
                     return version.id;
                   }}
                   onViewScheme={() => {
@@ -1732,7 +1838,7 @@ export default function App() {
                     description={
                       scheme ? tx("pages.schemes.detailLabel") : tx("nav.backHint")
                     }
-                    title={scheme?.name ?? tx("pages.schemes.missingTitle")}
+                    title={scheme?.title ?? tx("pages.schemes.missingTitle")}
                   />
                 ),
               };
@@ -1752,8 +1858,8 @@ export default function App() {
                   fragments={fragments}
                   scheme={scheme}
                   laws={laws}
-                  onDelete={() => {
-                    deleteScheme(scheme.id);
+                  onDelete={async () => {
+                    await deleteScheme(scheme.id);
                     navigation.goBack();
                   }}
                   onEdit={() => {
@@ -1779,7 +1885,7 @@ export default function App() {
                     description={
                       law ? tx("pages.laws.detailLabel") : tx("nav.backHint")
                     }
-                    title={law?.name ?? tx("pages.laws.missingTitle")}
+                    title={law?.title ?? tx("pages.laws.missingTitle")}
                   />
                 ),
               };
@@ -1795,8 +1901,8 @@ export default function App() {
               return (
                 <LawDetail
                   law={law}
-                  onDelete={() => {
-                    deleteLaw(law.id);
+                  onDelete={async () => {
+                    await deleteLaw(law.id);
                     navigation.goBack();
                   }}
                   onEdit={() => {
@@ -1813,8 +1919,8 @@ export default function App() {
         schemes={schemes}
         visible={composeOpen}
         onClose={() => setComposeOpen(false)}
-        onSubmit={(content, selection) => {
-          const id = collectFragment(content, selection);
+        onSubmit={async (content, selection) => {
+          const id = await collectFragment(content, selection);
           pushStack("FragmentDetail", { id });
         }}
       />
@@ -1825,9 +1931,9 @@ export default function App() {
         onClose={() => setSchemeEditorOpen(false)}
         onDismiss={() => setEditingSchemeId(null)}
         onCreateLaw={createLawFromSchemeEditor}
-        onSubmit={(name, description, lawIds) => {
+        onSubmit={async (name, description, lawIds) => {
           const wasEditing = Boolean(editingSchemeId);
-          const id = saveScheme(name, description, lawIds);
+          const id = await saveScheme(name, description, lawIds);
 
           if (!wasEditing) {
             pushStack("SchemeDetail", { id });
@@ -1839,9 +1945,9 @@ export default function App() {
         visible={lawEditorOpen}
         onClose={() => setLawEditorOpen(false)}
         onDismiss={() => setEditingLawId(null)}
-        onSubmit={(name, content, tags) => {
+        onSubmit={async (name, content, tags) => {
           const wasEditing = Boolean(editingLawId);
-          const id = saveLaw(name, content, tags);
+          const id = await saveLaw(name, content, tags);
 
           if (!wasEditing) {
             pushStack("LawDetail", { id });
@@ -2927,10 +3033,10 @@ function SchemeCard({
       <View style={styles.gridCard}>
         <View style={styles.gridCardContent}>
           <Text style={styles.gridCardTitle} numberOfLines={2}>
-            {scheme.name}
+            {scheme.title}
           </Text>
           <Text style={styles.gridCardBody} numberOfLines={5}>
-            {summarize(scheme.description, 180)}
+            {summarize(scheme.content, 180)}
           </Text>
         </View>
         <View style={styles.gridCardFooter}>
@@ -2953,7 +3059,7 @@ function LawCard({
       <View style={styles.gridCard}>
         <View style={styles.gridCardContent}>
           <Text style={styles.gridCardTitle} numberOfLines={2}>
-            {law.name}
+            {law.title}
           </Text>
           {law.tags.length > 0 ? (
             <View style={styles.tagRow}>
@@ -3158,10 +3264,10 @@ function SchemeSelectionScroller({
                         </Text>
                       </View>
                       <Text style={styles.schemeTileTitle} numberOfLines={2}>
-                        {scheme.name}
+                        {scheme.title}
                       </Text>
                       <Text style={styles.schemeTileBody} numberOfLines={4}>
-                        {summarize(scheme.description, 96)}
+                        {summarize(scheme.content, 96)}
                       </Text>
                     </Pressable>
                     <View style={styles.schemeTileFooter}>
@@ -3224,13 +3330,13 @@ function SchemeEditor({
   visible: boolean;
   onClose: () => void;
   onDismiss: () => void;
-  onCreateLaw: (name: string, content: string, tags: string[]) => Law;
+  onCreateLaw: (name: string, content: string, tags: string[]) => Promise<Law>;
   onSubmit: (name: string, description: string, lawIds: string[]) => void;
 }) {
   const [availableLaws, setAvailableLaws] = useState(laws);
-  const [name, setName] = useState(initialScheme?.name ?? "");
+  const [name, setName] = useState(initialScheme?.title ?? "");
   const [description, setDescription] = useState(
-    initialScheme?.description ?? "",
+    initialScheme?.content ?? "",
   );
   const [lawIds, setLawIds] = useState<string[]>(initialScheme?.lawIds ?? []);
   const [quickLawName, setQuickLawName] = useState("");
@@ -3240,7 +3346,7 @@ function SchemeEditor({
   const insets = useSafeAreaInsets();
   const floatingButtonBottom = insets.bottom + 14;
   const scrollBottomPadding = floatingButtonBottom + 42 + 18;
-  const canSubmit = name.trim().length > 0 && description.trim().length > 0;
+  const canSubmit = description.trim().length > 0;
   const canCreateLaw =
     quickLawName.trim().length > 0 && quickLawContent.trim().length > 0;
 
@@ -3252,8 +3358,8 @@ function SchemeEditor({
     if (!visible) return;
 
     setAvailableLaws(laws);
-    setName(initialScheme?.name ?? "");
-    setDescription(initialScheme?.description ?? "");
+    setName(initialScheme?.title ?? "");
+    setDescription(initialScheme?.content ?? "");
     setLawIds(initialScheme?.lawIds ?? []);
     setQuickLawName("");
     setQuickLawContent("");
@@ -3269,7 +3375,7 @@ function SchemeEditor({
     );
   }
 
-  function createQuickLaw() {
+  async function createQuickLaw() {
     const nextName = quickLawName.trim();
     const nextContent = quickLawContent.trim();
 
@@ -3278,7 +3384,7 @@ function SchemeEditor({
       return;
     }
 
-    const law = onCreateLaw(
+    const law = await onCreateLaw(
       nextName,
       nextContent,
       quickLawTags,
@@ -3380,7 +3486,7 @@ function SchemeEditor({
                         />
                         <View style={styles.lawPickTitleRow}>
                           <Text style={styles.lawPickTitle} numberOfLines={1}>
-                            {law.name}
+                            {law.title}
                           </Text>
                           <View
                             style={[
@@ -3423,7 +3529,9 @@ function SchemeEditor({
                     styles.quickLawButton,
                     !canCreateLaw && styles.buttonDisabled,
                   ]}
-                  onPress={createQuickLaw}
+                  onPress={() => {
+                    void createQuickLaw();
+                  }}
                 >
                   <Plus color={colors.primaryText} size={15} strokeWidth={2.4} />
                   <Text style={styles.primaryButtonText}>
@@ -3502,7 +3610,7 @@ function LawEditor({
   onDismiss: () => void;
   onSubmit: (name: string, content: string, tags: string[]) => void;
 }) {
-  const [name, setName] = useState(initialLaw?.name ?? "");
+  const [name, setName] = useState(initialLaw?.title ?? "");
   const [content, setContent] = useState(initialLaw?.content ?? "");
   const [tags, setTags] = useState<string[]>(initialLaw?.tags ?? []);
   const insets = useSafeAreaInsets();
@@ -3513,7 +3621,7 @@ function LawEditor({
   useEffect(() => {
     if (!visible) return;
 
-    setName(initialLaw?.name ?? "");
+    setName(initialLaw?.title ?? "");
     setContent(initialLaw?.content ?? "");
     setTags(initialLaw?.tags ?? []);
   }, [visible, initialLaw?.id]);
@@ -3905,10 +4013,14 @@ function FragmentDetail({
 }: {
   fragment: FragmentItem;
   schemes: Scheme[];
-  onAddDraft: (fragmentId: string, scheme: Scheme, count?: Count | number) => void;
-  onDelete: () => void;
+  onAddDraft: (
+    fragmentId: string,
+    scheme: Scheme,
+    count?: Count | number,
+  ) => Promise<void> | void;
+  onDelete: () => Promise<void> | void;
   onOpenDraft: (draftId: string) => void;
-  onUpdateContent: (id: string, content: string) => void;
+  onUpdateContent: (id: string, content: string) => Promise<void> | void;
 }) {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -3965,6 +4077,7 @@ function FragmentDetail({
               <DraftSummaryCard
                 key={draft.id}
                 draft={draft}
+                scheme={schemes.find((scheme) => scheme.id === draft.schemeId)}
                 onOpen={onOpenDraft}
               />
             ))}
@@ -3981,8 +4094,8 @@ function FragmentDetail({
         fragment={fragment}
         visible={editOpen}
         onClose={() => setEditOpen(false)}
-        onSubmit={(content) => {
-          onUpdateContent(fragment.id, content);
+        onSubmit={async (content) => {
+          await onUpdateContent(fragment.id, content);
           setEditOpen(false);
         }}
       />
@@ -3990,13 +4103,13 @@ function FragmentDetail({
         schemes={schemes}
         visible={generateOpen}
         onClose={() => setGenerateOpen(false)}
-        onSubmit={(selection) => {
-          schemes.forEach((scheme) => {
+        onSubmit={async (selection) => {
+          for (const scheme of schemes) {
             const item = selection[scheme.id];
             if (item?.selected) {
-              onAddDraft(fragment.id, scheme, item.count);
+              await onAddDraft(fragment.id, scheme, item.count);
             }
-          });
+          }
           setGenerateOpen(false);
         }}
       />
@@ -4015,9 +4128,11 @@ function FragmentDetail({
 function DraftSummaryCard({
   draft,
   onOpen,
+  scheme,
 }: {
   draft: Draft;
   onOpen: (id: string) => void;
+  scheme?: Scheme;
 }) {
   const latest = latestDraftVersion(draft);
 
@@ -4026,7 +4141,7 @@ function DraftSummaryCard({
       <View style={styles.gridCard}>
         <View style={styles.gridCardContent}>
           <Text style={styles.gridCardTitle} numberOfLines={2}>
-            {draft.schemeName}
+            {scheme?.title ?? tx("pages.drafts.missingTitle")}
           </Text>
           <Text style={styles.gridCardBody} numberOfLines={4}>
             {summarize(latest?.content ?? tx("pages.drafts.pendingPreview"), 150)}
@@ -4060,10 +4175,10 @@ function DraftDetail({
 }: {
   draft: Draft;
   laws: Law[];
-  onDeleteVersion: (versionId: string) => void;
-  onEditVersion: (content: string) => string | null;
-  onGenerate: () => void;
-  onRetryVersion: () => string | null;
+  onDeleteVersion: (versionId: string) => Promise<void> | void;
+  onEditVersion: (content: string) => Promise<string | null> | string | null;
+  onGenerate: () => Promise<void> | void;
+  onRetryVersion: () => Promise<string | null> | string | null;
   onViewScheme: () => void;
   scheme?: Scheme;
 }) {
@@ -4096,7 +4211,7 @@ function DraftDetail({
     activeVersion;
   const selectedLaw = laws.find((law) => law.id === lawDetailId);
   const schemeDescription =
-    scheme?.description ?? tx("pages.drafts.schemeUnavailable");
+    scheme?.content ?? tx("pages.drafts.schemeUnavailable");
   const activeVersionIndex = activeVersion
     ? draft.versions.findIndex((version) => version.id === activeVersion.id)
     : -1;
@@ -4165,12 +4280,12 @@ function DraftDetail({
     setEditVersionOpen(true);
   }
 
-  function saveVersionEdit() {
+  async function saveVersionEdit() {
     const nextContent = editVersionText.trim();
 
     if (!nextContent) return;
 
-    const nextVersionId = onEditVersion(nextContent);
+    const nextVersionId = await onEditVersion(nextContent);
     setEditVersionOpen(false);
 
     if (nextVersionId) {
@@ -4179,8 +4294,8 @@ function DraftDetail({
     }
   }
 
-  function retryVersion() {
-    const nextVersionId = onRetryVersion();
+  async function retryVersion() {
+    const nextVersionId = await onRetryVersion();
 
     if (nextVersionId) {
       setActiveVersionId(nextVersionId);
@@ -4193,7 +4308,7 @@ function DraftDetail({
     setDeleteVersionConfirmOpen(true);
   }
 
-  function confirmDeleteVersion() {
+  async function confirmDeleteVersion() {
     if (!actionVersion) return;
 
     const removingIndex = draft.versions.findIndex(
@@ -4202,7 +4317,7 @@ function DraftDetail({
     const fallbackVersion =
       draft.versions[removingIndex - 1] ?? draft.versions[removingIndex + 1];
 
-    onDeleteVersion(actionVersion.id);
+    await onDeleteVersion(actionVersion.id);
     setDeleteVersionConfirmOpen(false);
 
     if (fallbackVersion) {
@@ -4253,13 +4368,13 @@ function DraftDetail({
       <View style={[styles.draftDetailInner, detailPadding]}>
         <View style={styles.draftSchemeCard}>
           <Text style={styles.draftSchemePreviewText} numberOfLines={3}>
-            {scheme?.description ?? tx("pages.drafts.schemeUnavailable")}
+            {scheme?.content ?? tx("pages.drafts.schemeUnavailable")}
           </Text>
           {laws.length > 0 ? (
             <View style={styles.draftLawPillRow}>
               {laws.map((law) => (
                 <Text key={law.id} style={styles.tag} numberOfLines={1}>
-                  {law.name}
+                  {law.title}
                 </Text>
               ))}
             </View>
@@ -4529,7 +4644,7 @@ function DraftDetail({
                         onPress={() => setLawDetailId(law.id)}
                       >
                         <Text style={styles.lawPillButtonText} numberOfLines={1}>
-                          {law.name}
+                          {law.title}
                         </Text>
                       </Pressable>
                     ))}
@@ -4594,7 +4709,7 @@ function DraftDetail({
         <View style={styles.centerModalOverlay}>
           <View style={[styles.centerModalCard, styles.versionModalCard]}>
             <Text style={styles.centerModalTitle}>
-              {selectedLaw?.name ?? tx("pages.drafts.lawsTitle")}
+              {selectedLaw?.title ?? tx("pages.drafts.lawsTitle")}
             </Text>
             <ScrollView
               style={styles.versionModalScroll}
@@ -4894,11 +5009,11 @@ function DraftSchemeSelectionList({
                       </Text>
                     </View>
                     <Text style={styles.schemeTileTitle} numberOfLines={2}>
-                      {scheme.name}
+                      {scheme.title}
                     </Text>
                   </View>
                   <Text style={styles.schemeTileBody} numberOfLines={3}>
-                    {summarize(scheme.description, 120)}
+                    {summarize(scheme.content, 120)}
                   </Text>
                 </Pressable>
                 <View style={styles.schemeTileFooter}>
@@ -4954,7 +5069,7 @@ function SchemeDetail({
   fragments: FragmentItem[];
   scheme: Scheme;
   laws: Law[];
-  onDelete: () => void;
+  onDelete: () => Promise<void> | void;
   onEdit: () => void;
   onOpenFragment: (id: string) => void;
 }) {
@@ -4971,12 +5086,12 @@ function SchemeDetail({
           contentContainerStyle={styles.detailInner}
           showsVerticalScrollIndicator={false}
         >
-          <Text style={styles.paperSurface}>{scheme.description}</Text>
+          <Text style={styles.paperSurface}>{scheme.content}</Text>
           <Text style={styles.sectionTitle}>{tx("schemeEditor.lawsLabel")}</Text>
           {boundLaws.length > 0 ? (
             boundLaws.map((law) => (
               <View key={law.id} style={styles.lawDetailCard}>
-                <Text style={styles.gridCardTitle}>{law.name}</Text>
+                <Text style={styles.gridCardTitle}>{law.title}</Text>
                 <Text style={styles.gridCardBody}>{law.content}</Text>
               </View>
             ))
@@ -5020,7 +5135,7 @@ function SchemeDetail({
         confirmLabel={tx("actions.delete")}
         onCancel={() => setDeleteConfirmOpen(false)}
         onConfirm={onDelete}
-        subtitle={tx("pages.schemes.deleteSubtitle", { name: scheme.name })}
+        subtitle={tx("pages.schemes.deleteSubtitle", { name: scheme.title })}
         title={tx("pages.schemes.deleteTitle")}
         visible={deleteConfirmOpen}
       />
@@ -5034,7 +5149,7 @@ function LawDetail({
   onEdit,
 }: {
   law: Law;
-  onDelete: () => void;
+  onDelete: () => Promise<void> | void;
   onEdit: () => void;
 }) {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -5070,7 +5185,7 @@ function LawDetail({
         confirmLabel={tx("actions.delete")}
         onCancel={() => setDeleteConfirmOpen(false)}
         onConfirm={onDelete}
-        subtitle={tx("pages.laws.deleteSubtitle", { name: law.name })}
+        subtitle={tx("pages.laws.deleteSubtitle", { name: law.title })}
         title={tx("pages.laws.deleteTitle")}
         visible={deleteConfirmOpen}
       />
@@ -5176,7 +5291,6 @@ function createDraft({
   return {
     id: createId("draft"),
     schemeId: scheme.id,
-    schemeName: scheme.name,
     versions: Array.from({ length: count }, (_, index) =>
       createDraftVersion({
         scheme,
@@ -5201,7 +5315,7 @@ function createDraftVersion({
     versionNo,
     status: "completed",
     createdAt: new Date().toISOString(),
-    content: `这是根据「${scheme.name}」整理出的第 ${versionNo} 版初稿。\n\n${fragmentContent}\n\n接下来可以把开头再收紧一点，保留最有意思的判断，让它更适合直接拿去继续编辑。`,
+    content: `这是根据「${scheme.title}」整理出的第 ${versionNo} 版初稿。\n\n${fragmentContent}\n\n接下来可以把开头再收紧一点，保留最有意思的判断，让它更适合直接拿去继续编辑。`,
   };
 }
 
@@ -5228,6 +5342,7 @@ function latestDraftVersion(draft: Draft) {
 function draftStatusText(status?: DraftVersion["status"]) {
   if (status === "brewing") return tx("status.brewing");
   if (status === "failed") return tx("status.failed");
+  if (status === "expired") return tx("status.expired");
   return tx("status.completed");
 }
 
@@ -5530,6 +5645,554 @@ function getModelDescription(model: ModelOption) {
   return tx(model.descriptionKey);
 }
 
+type WorkspaceDatabase = Awaited<ReturnType<typeof SQLite.openDatabaseAsync>>;
+
+type FragmentRow = {
+  content: string;
+  created_at: string;
+  id: string;
+  title: string;
+  updated_at: string;
+};
+
+type SchemeRow = {
+  content: string;
+  created_at: string;
+  id: string;
+  title: string;
+  updated_at: string;
+};
+
+type SchemeLawRow = {
+  law_id: string;
+  scheme_id: string;
+  sort: number;
+};
+
+type LawRow = {
+  content: string;
+  created_at: string;
+  id: string;
+  tags_json: string;
+  title: string;
+  updated_at: string;
+};
+
+type DraftRow = {
+  created_at: string;
+  fragment_id: string;
+  id: string;
+  scheme_id: string;
+  updated_at: string;
+};
+
+type DraftVersionRow = {
+  content: string;
+  created_at: string;
+  draft_id: string;
+  id: string;
+  status: string;
+  version_no: number;
+};
+
+let workspaceDatabasePromise: Promise<WorkspaceDatabase> | null = null;
+
+async function readPersistedWorkspaceData(): Promise<BackupDataPayload> {
+  if (Platform.OS === "web") {
+    return { schemaVersion: backupDataSchemaVersion, fragments: [], laws: [], schemes: [] };
+  }
+
+  const db = await getWorkspaceDatabase();
+  const [lawRows, schemeRows, schemeLawRows, fragmentRows, draftRows, versionRows] =
+    await Promise.all([
+      db.getAllAsync<LawRow>(
+        "SELECT * FROM laws ORDER BY updated_at DESC, created_at DESC",
+      ),
+      db.getAllAsync<SchemeRow>(
+        "SELECT * FROM schemes ORDER BY updated_at DESC, created_at DESC",
+      ),
+      db.getAllAsync<SchemeLawRow>(
+        "SELECT * FROM scheme_laws ORDER BY scheme_id ASC, sort ASC",
+      ),
+      db.getAllAsync<FragmentRow>(
+        "SELECT * FROM fragments ORDER BY updated_at DESC, created_at DESC",
+      ),
+      db.getAllAsync<DraftRow>(
+        "SELECT * FROM drafts ORDER BY updated_at DESC, created_at DESC",
+      ),
+      db.getAllAsync<DraftVersionRow>(
+        "SELECT * FROM draft_versions ORDER BY draft_id ASC, version_no ASC",
+      ),
+    ]);
+
+  const lawIdsBySchemeId = new Map<string, string[]>();
+  schemeLawRows.forEach((row) => {
+    const ids = lawIdsBySchemeId.get(row.scheme_id) ?? [];
+    ids.push(row.law_id);
+    lawIdsBySchemeId.set(row.scheme_id, ids);
+  });
+
+  const versionsByDraftId = new Map<string, DraftVersion[]>();
+  versionRows.forEach((row) => {
+    const versions = versionsByDraftId.get(row.draft_id) ?? [];
+    versions.push({
+      content: row.content,
+      createdAt: row.created_at,
+      id: row.id,
+      status: parseDraftStatus(row.status),
+      versionNo: row.version_no,
+    });
+    versionsByDraftId.set(row.draft_id, versions);
+  });
+
+  const draftsByFragmentId = new Map<string, Draft[]>();
+  draftRows.forEach((row) => {
+    const versions = versionsByDraftId.get(row.id) ?? [];
+
+    if (versions.length === 0) return;
+
+    const drafts = draftsByFragmentId.get(row.fragment_id) ?? [];
+    drafts.push({
+      id: row.id,
+      schemeId: row.scheme_id,
+      versions,
+    });
+    draftsByFragmentId.set(row.fragment_id, drafts);
+  });
+
+  return {
+    schemaVersion: backupDataSchemaVersion,
+    fragments: fragmentRows.map((row) => ({
+      content: row.content,
+      createdAt: row.created_at,
+      drafts: (draftsByFragmentId.get(row.id) ?? [])
+        .slice()
+        .sort(
+          (a, b) =>
+            new Date(latestDraftVersion(b)?.createdAt ?? 0).getTime() -
+            new Date(latestDraftVersion(a)?.createdAt ?? 0).getTime(),
+        ),
+      id: row.id,
+      title: row.title,
+      updatedAt: row.updated_at,
+    })),
+    laws: lawRows.map((row) => ({
+      content: row.content,
+      createdAt: row.created_at,
+      id: row.id,
+      tags: parseStringArray(row.tags_json),
+      title: row.title,
+      updatedAt: row.updated_at,
+    })),
+    schemes: schemeRows.map((row) => ({
+      content: row.content,
+      createdAt: row.created_at,
+      id: row.id,
+      lawIds: lawIdsBySchemeId.get(row.id) ?? [],
+      title: row.title,
+      updatedAt: row.updated_at,
+    })),
+  };
+}
+
+async function insertPersistedFragment(fragment: FragmentItem) {
+  if (Platform.OS === "web") return;
+
+  await runWorkspaceTransaction(async (db) => {
+    await insertFragmentRow(db, fragment);
+  });
+}
+
+async function updatePersistedFragmentContent(
+  fragmentId: string,
+  content: string,
+  updatedAt: string,
+) {
+  if (Platform.OS === "web") return;
+
+  const db = await getWorkspaceDatabase();
+  await db.runAsync(
+    "UPDATE fragments SET content = ?, updated_at = ? WHERE id = ?",
+    content,
+    updatedAt,
+    fragmentId,
+  );
+}
+
+async function deletePersistedFragment(fragmentId: string) {
+  if (Platform.OS === "web") return;
+
+  const db = await getWorkspaceDatabase();
+  await db.runAsync("DELETE FROM fragments WHERE id = ?", fragmentId);
+}
+
+async function upsertPersistedScheme(scheme: Scheme) {
+  if (Platform.OS === "web") return;
+
+  await runWorkspaceTransaction(async (db) => {
+    await upsertSchemeRow(db, scheme);
+  });
+}
+
+async function deletePersistedScheme(schemeId: string) {
+  if (Platform.OS === "web") return;
+
+  const db = await getWorkspaceDatabase();
+  await db.runAsync("DELETE FROM schemes WHERE id = ?", schemeId);
+}
+
+async function upsertPersistedLaw(law: Law) {
+  if (Platform.OS === "web") return;
+
+  const db = await getWorkspaceDatabase();
+  await upsertLawRow(db, law);
+}
+
+async function deletePersistedLaw(lawId: string) {
+  if (Platform.OS === "web") return;
+
+  await runWorkspaceTransaction(async (db) => {
+    await db.runAsync("DELETE FROM scheme_laws WHERE law_id = ?", lawId);
+    await db.runAsync("DELETE FROM laws WHERE id = ?", lawId);
+  });
+}
+
+async function insertPersistedDraft(
+  fragmentId: string,
+  draft: Draft,
+  fragmentUpdatedAt: string,
+) {
+  if (Platform.OS === "web") return;
+
+  await runWorkspaceTransaction(async (db) => {
+    await insertDraftRow(db, fragmentId, draft);
+    await db.runAsync(
+      "UPDATE fragments SET updated_at = ? WHERE id = ?",
+      fragmentUpdatedAt,
+      fragmentId,
+    );
+  });
+}
+
+async function insertPersistedDraftVersions(
+  fragmentId: string,
+  draftId: string,
+  versions: DraftVersion[],
+) {
+  if (Platform.OS === "web" || versions.length === 0) return;
+
+  const updatedAt = versions.at(-1)?.createdAt ?? new Date().toISOString();
+
+  await runWorkspaceTransaction(async (db) => {
+    for (const version of versions) {
+      await insertDraftVersionRow(db, draftId, version);
+    }
+
+    await db.runAsync(
+      "UPDATE drafts SET updated_at = ? WHERE id = ?",
+      updatedAt,
+      draftId,
+    );
+    await db.runAsync(
+      "UPDATE fragments SET updated_at = ? WHERE id = ?",
+      updatedAt,
+      fragmentId,
+    );
+  });
+}
+
+async function deletePersistedDraftVersion(
+  draftId: string,
+  versionId: string,
+  fragmentUpdatedAt: string,
+) {
+  if (Platform.OS === "web") return;
+
+  await runWorkspaceTransaction(async (db) => {
+    const draft = await db.getFirstAsync<{ fragment_id: string }>(
+      "SELECT fragment_id FROM drafts WHERE id = ?",
+      draftId,
+    );
+
+    await db.runAsync("DELETE FROM draft_versions WHERE id = ?", versionId);
+    await db.runAsync(
+      `DELETE FROM drafts
+       WHERE id = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM draft_versions WHERE draft_versions.draft_id = drafts.id
+       )`,
+      draftId,
+    );
+
+    if (draft?.fragment_id) {
+      await db.runAsync(
+        "UPDATE fragments SET updated_at = ? WHERE id = ?",
+        fragmentUpdatedAt,
+        draft.fragment_id,
+      );
+    }
+  });
+}
+
+async function replacePersistedWorkspaceData(data: BackupDataPayload) {
+  if (Platform.OS === "web") return;
+
+  await runWorkspaceTransaction(async (db) => {
+    await clearWorkspaceTables(db);
+
+    for (const law of data.laws) {
+      await upsertLawRow(db, law);
+    }
+
+    for (const scheme of data.schemes) {
+      await upsertSchemeRow(db, scheme);
+    }
+
+    for (const fragment of data.fragments) {
+      await insertFragmentRow(db, fragment);
+    }
+  });
+}
+
+async function getWorkspaceDatabase() {
+  workspaceDatabasePromise ??= SQLite.openDatabaseAsync(
+    workspaceDatabaseName,
+  ).then(async (db) => {
+    await migrateWorkspaceDatabase(db);
+    return db;
+  });
+
+  return workspaceDatabasePromise;
+}
+
+async function migrateWorkspaceDatabase(db: WorkspaceDatabase) {
+  const versionRow = await db.getFirstAsync<{ user_version: number }>(
+    "PRAGMA user_version",
+  );
+  const currentVersion = versionRow?.user_version ?? 0;
+
+  if (currentVersion > 0 && currentVersion < workspaceSchemaVersion) {
+    await dropWorkspaceTables(db);
+  }
+
+  await db.execAsync(`
+    PRAGMA foreign_keys = ON;
+    PRAGMA journal_mode = WAL;
+
+    CREATE TABLE IF NOT EXISTS laws (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS schemes (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS scheme_laws (
+      scheme_id TEXT NOT NULL,
+      law_id TEXT NOT NULL,
+      sort INTEGER NOT NULL,
+      PRIMARY KEY (scheme_id, law_id),
+      FOREIGN KEY (scheme_id) REFERENCES schemes(id) ON DELETE CASCADE,
+      FOREIGN KEY (law_id) REFERENCES laws(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS fragments (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS drafts (
+      id TEXT PRIMARY KEY NOT NULL,
+      fragment_id TEXT NOT NULL,
+      scheme_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (fragment_id) REFERENCES fragments(id) ON DELETE CASCADE,
+      FOREIGN KEY (scheme_id) REFERENCES schemes(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS draft_versions (
+      id TEXT PRIMARY KEY NOT NULL,
+      draft_id TEXT NOT NULL,
+      version_no INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('brewing', 'completed', 'failed', 'expired')),
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (draft_id) REFERENCES drafts(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_scheme_laws_law_id ON scheme_laws(law_id);
+    CREATE INDEX IF NOT EXISTS idx_drafts_fragment_id ON drafts(fragment_id);
+    CREATE INDEX IF NOT EXISTS idx_drafts_scheme_id ON drafts(scheme_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_draft_versions_draft_id_version_no
+      ON draft_versions(draft_id, version_no);
+
+    PRAGMA user_version = ${workspaceSchemaVersion};
+  `);
+}
+
+async function runWorkspaceTransaction(
+  task: (db: WorkspaceDatabase) => Promise<void>,
+) {
+  const db = await getWorkspaceDatabase();
+  await db.withExclusiveTransactionAsync(async (transaction) => {
+    await task(transaction);
+  });
+}
+
+async function clearWorkspaceTables(db: WorkspaceDatabase) {
+  await db.runAsync("DELETE FROM draft_versions");
+  await db.runAsync("DELETE FROM drafts");
+  await db.runAsync("DELETE FROM scheme_laws");
+  await db.runAsync("DELETE FROM fragments");
+  await db.runAsync("DELETE FROM schemes");
+  await db.runAsync("DELETE FROM laws");
+}
+
+async function dropWorkspaceTables(db: WorkspaceDatabase) {
+  await db.execAsync(`
+    DROP TABLE IF EXISTS draft_versions;
+    DROP TABLE IF EXISTS drafts;
+    DROP TABLE IF EXISTS scheme_laws;
+    DROP TABLE IF EXISTS fragments;
+    DROP TABLE IF EXISTS schemes;
+    DROP TABLE IF EXISTS laws;
+  `);
+}
+
+async function upsertLawRow(db: WorkspaceDatabase, law: Law) {
+  await db.runAsync(
+    `INSERT OR REPLACE INTO laws
+      (id, title, content, tags_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    law.id,
+    law.title,
+    law.content,
+    JSON.stringify(law.tags),
+    law.createdAt,
+    law.updatedAt,
+  );
+}
+
+async function upsertSchemeRow(db: WorkspaceDatabase, scheme: Scheme) {
+  await db.runAsync(
+    `INSERT OR REPLACE INTO schemes
+      (id, title, content, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    scheme.id,
+    scheme.title,
+    scheme.content,
+    scheme.createdAt,
+    scheme.updatedAt,
+  );
+  await db.runAsync("DELETE FROM scheme_laws WHERE scheme_id = ?", scheme.id);
+
+  for (const [sort, lawId] of scheme.lawIds.entries()) {
+    await db.runAsync(
+      `INSERT OR REPLACE INTO scheme_laws
+        (scheme_id, law_id, sort)
+       VALUES (?, ?, ?)`,
+      scheme.id,
+      lawId,
+      sort,
+    );
+  }
+}
+
+async function insertFragmentRow(db: WorkspaceDatabase, fragment: FragmentItem) {
+  await db.runAsync(
+    `INSERT OR REPLACE INTO fragments
+      (id, title, content, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    fragment.id,
+    fragment.title,
+    fragment.content,
+    fragment.createdAt,
+    fragment.updatedAt,
+  );
+
+  for (const draft of fragment.drafts) {
+    await insertDraftRow(db, fragment.id, draft);
+  }
+}
+
+async function insertDraftRow(
+  db: WorkspaceDatabase,
+  fragmentId: string,
+  draft: Draft,
+) {
+  const createdAt = draft.versions[0]?.createdAt ?? new Date().toISOString();
+  const updatedAt = latestDraftVersion(draft)?.createdAt ?? createdAt;
+
+  await db.runAsync(
+    `INSERT OR REPLACE INTO drafts
+      (id, fragment_id, scheme_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    draft.id,
+    fragmentId,
+    draft.schemeId,
+    createdAt,
+    updatedAt,
+  );
+
+  for (const version of draft.versions) {
+    await insertDraftVersionRow(db, draft.id, version);
+  }
+}
+
+async function insertDraftVersionRow(
+  db: WorkspaceDatabase,
+  draftId: string,
+  version: DraftVersion,
+) {
+  await db.runAsync(
+    `INSERT OR REPLACE INTO draft_versions
+      (id, draft_id, version_no, status, content, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    version.id,
+    draftId,
+    version.versionNo,
+    version.status,
+    version.content,
+    version.createdAt,
+  );
+}
+
+function parseStringArray(raw: string) {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseDraftStatus(status: string): DraftVersion["status"] {
+  return (
+    status === "brewing" ||
+    status === "failed" ||
+    status === "completed" ||
+    status === "expired"
+  )
+    ? status
+    : "failed";
+}
+
 async function readPersistedMobileSettings() {
   if (Platform.OS === "web") {
     const raw = globalThis.localStorage?.getItem(mobileSettingsStorageKey);
@@ -5612,6 +6275,7 @@ async function writeBackupBundle({
       {
         app: "essai",
         createdAt: new Date().toISOString(),
+        dataSchemaVersion: selection.data ? data.schemaVersion : undefined,
         sections,
         version: 1,
       },
@@ -5730,6 +6394,7 @@ function isBackupDataPayload(value: unknown): value is BackupDataPayload {
   const payload = value as Partial<BackupDataPayload>;
 
   return (
+    payload.schemaVersion === backupDataSchemaVersion &&
     Array.isArray(payload.fragments) &&
     Array.isArray(payload.laws) &&
     Array.isArray(payload.schemes)
