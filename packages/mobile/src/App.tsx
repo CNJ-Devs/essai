@@ -99,6 +99,11 @@ const androidSystemBarModalProps =
         statusBarTranslucent: true,
       } as const)
     : {};
+const modalKeyboardAvoidingBehavior = Platform.select({
+  android: "height" as const,
+  default: undefined,
+  ios: "padding" as const,
+});
 
 type Scheme = {
   id: string;
@@ -3691,7 +3696,7 @@ function ComposeSheet({
       onRequestClose={onClose}
     >
       <KeyboardAvoidingView
-        behavior={Platform.select({ ios: "padding", default: undefined })}
+        behavior={modalKeyboardAvoidingBehavior}
         style={styles.modalShell}
       >
         <SafeAreaView
@@ -5265,7 +5270,7 @@ function DraftDetail({
         visible={editVersionOpen}
       >
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          behavior={modalKeyboardAvoidingBehavior}
           style={styles.centerModalOverlay}
         >
           <View style={[styles.centerModalCard, styles.versionEditorCard]}>
@@ -5314,7 +5319,7 @@ function DraftDetail({
         visible={rewriteOpen}
       >
         <KeyboardAvoidingView
-          behavior={Platform.select({ ios: "padding", default: undefined })}
+          behavior={modalKeyboardAvoidingBehavior}
           style={styles.modalShell}
         >
           <SafeAreaView
@@ -5432,7 +5437,7 @@ function FragmentContentEditor({
       onRequestClose={onClose}
     >
       <KeyboardAvoidingView
-        behavior={Platform.select({ ios: "padding", default: undefined })}
+        behavior={modalKeyboardAvoidingBehavior}
         style={styles.modalShell}
       >
         <SafeAreaView

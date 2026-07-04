@@ -15,7 +15,8 @@
       "bundler": "metro"
     },
     "android": {
-      "package": "com.cnjdevs.essai"
+      "package": "com.cnjdevs.essai",
+      "softwareKeyboardLayoutMode": "resize"
     }
   }
 }
