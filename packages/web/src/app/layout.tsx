@@ -6,6 +6,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: copy.meta.title,
   description: copy.meta.description,
+  manifest: "/site.webmanifest",
 };
 
 export default function RootLayout({
