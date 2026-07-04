@@ -12,8 +12,8 @@ on:
         type: string
 
 concurrency:
-  group: deploy-web-production-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || github.ref_name }}
-  cancel-in-progress: false
+  group: deploy-web-production
+  queue: max
 
 permissions:
   contents: read
@@ -35,27 +35,145 @@ jobs:
 
       - name: Validate release tag
         run: |
-          case "$RELEASE_REF" in
-            essai-web-v*) ;;
-            *)
-              echo "RELEASE_REF must match essai-web-v*; got $RELEASE_REF"
-              exit 1
-              ;;
-          esac
+          if [[ ! "$RELEASE_REF" =~ ^essai-web-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "RELEASE_REF must match essai-web-vX.Y.Z; got $RELEASE_REF"
+            exit 1
+          fi
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
+      - name: Resolve current production Web release
+        id: release
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          main().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+
+          async function main() {
+            const releaseRef = process.env.RELEASE_REF;
+            const vercelToken = process.env.VERCEL_TOKEN;
+            const projectId = process.env.VERCEL_PROJECT_ID;
+            const orgId = process.env.VERCEL_ORG_ID;
+
+            const releaseVersion = parseRelease(releaseRef);
+
+            if (!vercelToken) {
+              throw new Error("VERCEL_TOKEN is required to inspect production deployments.");
+            }
+
+            if (!projectId) {
+              throw new Error("VERCEL_PROJECT_ID is required to inspect production deployments.");
+            }
+
+            const url = new URL("https://api.vercel.com/v7/deployments");
+            url.searchParams.set("projectId", projectId);
+            url.searchParams.set("target", "production");
+            url.searchParams.set("state", "READY");
+            url.searchParams.set("limit", "20");
+            if (orgId?.startsWith("team_")) {
+              url.searchParams.set("teamId", orgId);
+            }
+
+            const response = await fetch(url, {
+              headers: {
+                Authorization: `Bearer ${vercelToken}`,
+                "Content-Type": "application/json",
+              },
+            });
+
+            if (!response.ok) {
+              const body = await response.text();
+              throw new Error(`Failed to inspect Vercel deployments: ${response.status} ${body}`);
+            }
+
+            const data = await response.json();
+            const currentTag = findCurrentReleaseTag(data.deployments ?? []);
+            const currentVersion = currentTag ? parseRelease(currentTag) : null;
+            const deploy =
+              currentVersion === null || compareVersions(currentVersion, releaseVersion) <= 0;
+
+            writeOutput("current", releaseRef);
+            writeOutput("production", currentTag || "none");
+            writeOutput("deploy", deploy ? "true" : "false");
+
+            if (deploy) {
+              console.log(
+                currentTag
+                  ? `Production is ${currentTag}; deploying ${releaseRef}.`
+                  : `No production release marker found; deploying ${releaseRef}.`,
+              );
+            } else {
+              console.log(`Skipping ${releaseRef}; production is already ${currentTag}.`);
+            }
+          }
+
+          function parseRelease(tag) {
+            const match = /^essai-web-v(\d+)\.(\d+)\.(\d+)$/.exec(tag ?? "");
+            if (!match) {
+              throw new Error(`Invalid Web release tag: ${tag}`);
+            }
+
+            return match.slice(1).map((part) => Number(part));
+          }
+
+          function compareVersions(left, right) {
+            for (let index = 0; index < 3; index += 1) {
+              const diff = left[index] - right[index];
+              if (diff !== 0) return diff;
+            }
+
+            return 0;
+          }
+
+          function findCurrentReleaseTag(deployments) {
+            for (const deployment of deployments) {
+              const tag = deployment.meta?.essaiReleaseTag;
+              if (/^essai-web-v\d+\.\d+\.\d+$/.test(tag ?? "")) {
+                return tag;
+              }
+            }
+
+            return null;
+          }
+
+          function writeOutput(name, value) {
+            const githubOutput = process.env.GITHUB_OUTPUT;
+            if (!githubOutput) {
+              throw new Error("GITHUB_OUTPUT is required to set workflow outputs.");
+            }
+
+            fs.appendFileSync(githubOutput, `${name}=${value}\n`);
+          }
+          NODE
+
+      - name: Skip superseded release
+        if: steps.release.outputs.deploy != 'true'
+        run: |
+          echo "::notice::Skipped ${{ steps.release.outputs.current }}; production is already ${{ steps.release.outputs.production }}."
+
       - name: Install Vercel CLI
+        if: steps.release.outputs.deploy == 'true'
         run: npm install -g vercel@54.18.7
 
       - name: Pull Vercel production environment
+        if: steps.release.outputs.deploy == 'true'
         run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Build Web/API
+        if: steps.release.outputs.deploy == 'true'
         run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Deploy Web/API
-        run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+        if: steps.release.outputs.deploy == 'true'
+        run: vercel deploy --prebuilt --prod --meta essaiReleaseTag=$RELEASE_REF --token=${{ secrets.VERCEL_TOKEN }}

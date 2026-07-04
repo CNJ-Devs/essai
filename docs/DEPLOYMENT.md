@@ -8,6 +8,8 @@ Web/API production deployments are triggered by Git tags that match:
 essai-web-v*
 ```
 
+Production deployments are serialized by the workflow. A release tag deploys unless the current Vercel production deployment is already marked with a newer `essai-web-vX.Y.Z` version. This lets close-together tags deploy in queue order while still preventing older runs from overwriting a newer production deployment.
+
 Normal branch pushes and pull requests should stay as preview deployments. The Web package includes `packages/web/vercel.json` with `github.autoAlias: false` so Vercel's GitHub integration does not automatically alias Git deployments to production. Production is handled by `.github/workflows/deploy-web-production.yml`.
 
 The workflow also has a manual `workflow_dispatch` fallback. Use it for historical tags whose target commits were created before the workflow file existed.
@@ -71,13 +73,15 @@ git push origin main
 Push a specific Web/API production release:
 
 ```bash
-git push origin essai-web-v0.4.0
+git push origin essai-web-v0.5.3
 ```
 
-Avoid `git push --tags` unless you intentionally want to trigger every unpublished `essai-web-v*` release tag.
+Avoid `git push --tags`. GitHub does not create tag push events when more than three tags are pushed at once, and bulk tag pushes are harder to reason about.
 
-For historical tags, use GitHub Actions → Deploy Web Production → Run workflow, and enter the tag name, for example:
+Push release tags one at a time. Historical tags that point to commits before the production marker guard was added should stay local unless you intentionally disable the production workflow while uploading them; otherwise those old commits may run their old workflow definitions.
+
+For guarded historical tags, use GitHub Actions → Deploy Web Production → Run workflow, and enter the tag name, for example:
 
 ```text
-essai-web-v0.4.0
+essai-web-v0.5.3
 ```
