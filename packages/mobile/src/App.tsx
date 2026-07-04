@@ -360,6 +360,8 @@ const mobileResources = {
         completed: "已成稿",
       },
       generation: {
+        configRequired: "生成服务缺少加密配置，请先补齐环境变量再出稿。",
+        configRequiredTitle: "生成服务未配置",
         idConflict: "这次生成任务的 ID 和另一条任务冲突了，请重新出稿。",
         modelRequired: "先在设置里添加服务密钥并选择模型，再开始出稿。",
         modelRequiredTitle: "还没有可用模型",
@@ -620,6 +622,8 @@ const mobileResources = {
         completed: "Ready",
       },
       generation: {
+        configRequired: "Generation encryption is not configured. Add the required environment variables before drafting.",
+        configRequiredTitle: "Generation service not configured",
         idConflict: "This generation ID conflicts with another task. Please draft again.",
         modelRequired: "Add a service key and choose a model in Settings before drafting.",
         modelRequiredTitle: "No model available",
@@ -992,18 +996,13 @@ const fragmentMasonryMinColumnWidth = 156;
 const fragmentMasonryGap = 8;
 const generationWorkflowTimeoutMs = 240_000;
 const generationDeadlineBufferMs = 30_000;
-const mobileEnv = (
-  globalThis as typeof globalThis & {
-    process?: { env?: Record<string, string | undefined> };
-  }
-).process?.env;
 const generationApiBaseUrl =
-  mobileEnv?.EXPO_PUBLIC_GENERATION_API_BASE_URL ??
+  process.env.EXPO_PUBLIC_GENERATION_API_BASE_URL ??
   (Platform.OS === "android" ? "http://10.0.2.2:3000" : "http://localhost:3000");
 const requestEncryptionPublicJwk =
-  mobileEnv?.EXPO_PUBLIC_REQUEST_ENCRYPTION_PUBLIC_JWK;
+  process.env.EXPO_PUBLIC_REQUEST_ENCRYPTION_PUBLIC_JWK;
 const apiKeyEncryptionPublicJwk =
-  mobileEnv?.EXPO_PUBLIC_API_KEY_ENCRYPTION_PUBLIC_JWK;
+  process.env.EXPO_PUBLIC_API_KEY_ENCRYPTION_PUBLIC_JWK;
 const generationProviderDefaults: Record<ProviderId, string> = {
   anthropic: "claude-sonnet-5",
   deepseek: "deepseek-v4-pro",
@@ -1360,6 +1359,19 @@ export default function App() {
                 status: "failed",
               }),
             ),
+        );
+        return;
+      }
+
+      if (error instanceof GenerationApiConfigurationError) {
+        showGenerationConfigRequired();
+        await Promise.all(
+          targets.map((target) =>
+            updateDraftVersionStatus(target.versionId, {
+              content: tx("generation.configRequired"),
+              status: "failed",
+            }),
+          ),
         );
         return;
       }
@@ -7483,6 +7495,18 @@ function showGenerationModelRequired() {
   Alert.alert(title, message);
 }
 
+function showGenerationConfigRequired() {
+  const title = tx("generation.configRequiredTitle");
+  const message = tx("generation.configRequired");
+
+  if (Platform.OS === "web") {
+    globalThis.alert?.(`${title}\n${message}`);
+    return;
+  }
+
+  Alert.alert(title, message);
+}
+
 function getModelNameFromId(modelId: string) {
   return modelId.includes(":") ? modelId.split(":").slice(1).join(":") : modelId;
 }
@@ -7571,6 +7595,10 @@ function normalizeStableValue(value: unknown): unknown {
 async function prepareGenerationApiBody<T extends Record<string, unknown>>(
   request: T,
 ) {
+  if (isLocalGenerationApiUrl(generationApiBaseUrl)) {
+    return request;
+  }
+
   const withEncryptedApiKey = await maybeEncryptProviderApiKey(request);
 
   return maybeEncryptRequestBody(withEncryptedApiKey);
@@ -7582,9 +7610,11 @@ async function maybeEncryptProviderApiKey<T extends Record<string, unknown>>(
   const apiKey = typeof request.apiKey === "string" ? request.apiKey : "";
   const publicKey = apiKeyEncryptionPublicJwk?.trim();
 
-  if (!apiKey || !publicKey || !canUseWebCrypto()) {
+  if (!apiKey) {
     return request;
   }
+
+  assertGenerationEncryptionConfigured(publicKey);
 
   const encryptedApiKey = await encryptRsaOaepPayload(apiKey, publicKey);
   const { apiKey: _apiKey, ...rest } = request;
@@ -7598,9 +7628,7 @@ async function maybeEncryptProviderApiKey<T extends Record<string, unknown>>(
 async function maybeEncryptRequestBody(request: Record<string, unknown>) {
   const publicKey = requestEncryptionPublicJwk?.trim();
 
-  if (!publicKey || !canUseWebCrypto()) {
-    return request;
-  }
+  assertGenerationEncryptionConfigured(publicKey);
 
   const subtle = globalThis.crypto.subtle;
   const aesKey = await subtle.generateKey(
@@ -7627,6 +7655,52 @@ async function maybeEncryptRequestBody(request: Record<string, unknown>) {
     },
     schemaVersion: 1,
   };
+}
+
+function assertGenerationEncryptionConfigured(publicKey?: string) {
+  if (!publicKey || !canUseWebCrypto()) {
+    throw new GenerationApiConfigurationError();
+  }
+}
+
+function isLocalGenerationApiUrl(value: string) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+
+    return (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1" ||
+      hostname === "0.0.0.0" ||
+      hostname === "10.0.2.2" ||
+      hostname === "host.docker.internal" ||
+      hostname.endsWith(".local") ||
+      isPrivateIpv4(hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isPrivateIpv4(hostname: string) {
+  const parts = hostname.split(".").map((part) => Number(part));
+
+  if (
+    parts.length !== 4 ||
+    parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+  ) {
+    return false;
+  }
+
+  const [first, second] = parts;
+
+  return (
+    first === 10 ||
+    first === 127 ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 169 && second === 254)
+  );
 }
 
 async function encryptRsaOaepPayload(value: string, publicJwk: string) {
@@ -7796,6 +7870,12 @@ class GenerationApiRequestError extends Error {
 
     super(apiError?.message ?? "Generation API request failed.");
     this.details = details;
+  }
+}
+
+class GenerationApiConfigurationError extends Error {
+  constructor() {
+    super("Generation encryption is not configured.");
   }
 }
 
