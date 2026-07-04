@@ -1,6 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import * as DocumentPicker from "expo-document-picker";
+import * as Crypto from "expo-crypto";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import * as SQLite from "expo-sqlite";
@@ -74,6 +75,7 @@ type TabId = "fragments" | "schemes" | "laws" | "more";
 type ThemeId = "parchment" | "sage" | "rose" | "sky" | "mint" | "dark";
 type LanguageId = "system" | "zh-Hans" | "en";
 type ProviderId = "openai" | "deepseek" | "anthropic";
+type GenerationProviderId = ProviderId | "mock";
 
 type RootStackParamList = {
   Home: undefined;
@@ -122,6 +124,8 @@ type DraftVersion = {
   versionNo: number;
   content: string;
   createdAt: string;
+  deadlineAt: string | null;
+  snapshot: GenerationSnapshot;
   status: "completed" | "brewing" | "failed" | "expired";
 };
 
@@ -176,6 +180,51 @@ type AppTheme = {
 
 type ProviderKeys = Record<ProviderId, string>;
 
+type SchemeGenerationSnapshot = {
+  content: {
+    fragment: {
+      content: string;
+      id: string;
+      title: string;
+    };
+    laws: Array<{
+      content: string;
+      id: string;
+      title: string;
+    }>;
+    scheme: {
+      content: string;
+      id: string;
+      title: string;
+    };
+  };
+  type: "scheme";
+  version: 1;
+};
+
+type RewriteGenerationSnapshot = {
+  content: {
+    instruction: string;
+    sourceContent: string;
+    sourceVersionId: string;
+  };
+  type: "rewrite";
+  version: 1;
+};
+
+type UnavailableGenerationSnapshot = {
+  content: {
+    reason: string;
+  };
+  type: "unavailable";
+  version: 1;
+};
+
+type GenerationSnapshot =
+  | SchemeGenerationSnapshot
+  | RewriteGenerationSnapshot
+  | UnavailableGenerationSnapshot;
+
 type ModelOption = {
   id: string;
   name: string;
@@ -189,17 +238,61 @@ type AvailableModelOption = ModelOption & {
 
 type TranslateOptions = Record<string, string | number | boolean | null>;
 
+type DraftGenerationPayload = SchemeGenerationSnapshot["content"];
+
+type DraftGenerationTarget = {
+  draftId: string;
+  fragmentId: string;
+  payload: DraftGenerationPayload;
+  snapshot: SchemeGenerationSnapshot;
+  versionId: string;
+};
+
+type GenerationService = {
+  apiKey?: string;
+  model: string;
+  provider: GenerationProviderId;
+};
+
+type GenerationApiRecord = {
+  deadlineAt?: string;
+  error?: {
+    code: string;
+    message: string;
+    providerStatus: number | null;
+  } | null;
+  id: string;
+  output?: {
+    content: string;
+  } | null;
+  status: "running" | "succeeded" | "failed";
+};
+
+type GenerationApiError = {
+  code?: string;
+  details?: {
+    ids?: string[];
+  } | null;
+  message?: string;
+};
+
+type GenerationRecoveryResult = {
+  expiredIds: string[];
+  records: GenerationApiRecord[];
+};
+
 type TransferSectionId = "data" | "config";
 
 type PersistedMobileSettings = {
   activeModelId?: string | null;
   languageId?: LanguageId;
+  providerKeys?: ProviderKeys;
   themeId?: ThemeId;
   version: 1;
 };
 
 type BackupDataPayload = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   fragments: FragmentItem[];
   laws: Law[];
   schemes: Scheme[];
@@ -213,9 +306,9 @@ type ParsedBackupBundle = {
 };
 
 const mobileSettingsStorageKey = "essai.mobile.settings.v1";
-const backupDataSchemaVersion = 1;
+const backupDataSchemaVersion = 2;
 const workspaceDatabaseName = "essai-workspace.db";
-const workspaceSchemaVersion = 3;
+const workspaceSchemaVersion = 5;
 
 const mobileResources = {
   "zh-Hans": {
@@ -263,6 +356,9 @@ const mobileResources = {
         failed: "失败",
         expired: "已失效",
         completed: "已成稿",
+      },
+      generation: {
+        idConflict: "这次生成任务的 ID 和另一条任务冲突了，请重新出稿。",
       },
       pages: {
         fragments: {
@@ -510,6 +606,9 @@ const mobileResources = {
         failed: "Failed",
         expired: "Expired",
         completed: "Ready",
+      },
+      generation: {
+        idConflict: "This generation ID conflicts with another task. Please draft again.",
       },
       pages: {
         fragments: {
@@ -870,6 +969,32 @@ const emptyProviderKeys: ProviderKeys = {
 const quickLawTagMaxLength = 24;
 const fragmentMasonryMinColumnWidth = 156;
 const fragmentMasonryGap = 8;
+const generationWorkflowTimeoutMs = 240_000;
+const generationDeadlineBufferMs = 30_000;
+const mobileEnv = (
+  globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  }
+).process?.env;
+const generationApiBaseUrl =
+  mobileEnv?.EXPO_PUBLIC_GENERATION_API_BASE_URL ??
+  (Platform.OS === "android" ? "http://10.0.2.2:3000" : "http://localhost:3000");
+const requestEncryptionPublicJwk =
+  mobileEnv?.EXPO_PUBLIC_REQUEST_ENCRYPTION_PUBLIC_JWK;
+const apiKeyEncryptionPublicJwk =
+  mobileEnv?.EXPO_PUBLIC_API_KEY_ENCRYPTION_PUBLIC_JWK;
+const generationProviderDefaults: Record<GenerationProviderId, string> = {
+  anthropic: "claude-sonnet-5",
+  deepseek: "deepseek-v4-pro",
+  mock: "mock-essai-draft-v1",
+  openai: "gpt-5.4-mini",
+};
+const draftGenerationOptions = {
+  maxOutputTokens: 1800,
+};
+const titleGenerationOptions = {
+  maxOutputTokens: 96,
+};
 
 function NavigationHeaderTitle({
   title,
@@ -971,6 +1096,7 @@ export default function App() {
   );
   const activeModel =
     availableModels.find((model) => model.id === activeModelId) ?? null;
+  const recoveringGenerationIdsRef = useRef(new Set<string>());
 
   const editingScheme = useMemo(
     () => schemes.find((scheme) => scheme.id === editingSchemeId),
@@ -1030,6 +1156,10 @@ export default function App() {
         ) {
           setActiveModelId(parsed.activeModelId);
         }
+
+        if (isProviderKeys(parsed.providerKeys)) {
+          setProviderKeys(parsed.providerKeys);
+        }
       })
       .catch(() => {
         // Broken local settings should not block the app shell.
@@ -1051,12 +1181,13 @@ export default function App() {
     const payload: PersistedMobileSettings = {
       activeModelId,
       languageId,
+      providerKeys,
       themeId,
       version: 1,
     };
 
     void writePersistedMobileSettings(payload).catch(() => undefined);
-  }, [activeModelId, languageId, settingsLoaded, themeId]);
+  }, [activeModelId, languageId, providerKeys, settingsLoaded, themeId]);
 
   useEffect(() => {
     if (availableModels.length === 0) {
@@ -1072,33 +1203,259 @@ export default function App() {
     }
   }, [activeModelId, availableModels]);
 
+  useEffect(() => {
+    const pendingRefs = getPendingDraftVersionRefs(fragments).filter(
+      (item) => !recoveringGenerationIdsRef.current.has(item.versionId),
+    );
+
+    if (pendingRefs.length === 0) return;
+
+    pendingRefs.forEach((item) => {
+      recoveringGenerationIdsRef.current.add(item.versionId);
+    });
+
+    void recoverDraftVersions(pendingRefs).finally(() => {
+      pendingRefs.forEach((item) => {
+        recoveringGenerationIdsRef.current.delete(item.versionId);
+      });
+    });
+  }, [fragments]);
+
+  async function recoverDraftVersions(
+    refs: Array<{ draftId: string; fragmentId: string; versionId: string }>,
+  ) {
+    if (refs.length === 0) return;
+
+    try {
+      const recovery = await followGenerationRecords(
+        refs.map((item) => item.versionId),
+      );
+
+      await applyGenerationRecovery(recovery);
+    } catch {
+      try {
+        const recovery = await pullGenerationRecords(
+          refs.map((item) => item.versionId),
+        );
+
+        await applyGenerationRecovery(recovery);
+      } catch {
+        // Keep local records brewing; the next recovery pass can try again.
+      }
+    }
+  }
+
+  async function applyGenerationRecovery(recovery: GenerationRecoveryResult) {
+    for (const record of recovery.records) {
+      await updateDraftVersionFromRecord(record);
+    }
+
+    for (const id of recovery.expiredIds) {
+      await updateDraftVersionStatus(id, {
+        content: tx("status.expired"),
+        status: "expired",
+      });
+    }
+  }
+
+  async function requestDraftGenerations(targets: DraftGenerationTarget[]) {
+    if (targets.length === 0) return;
+
+    targets.forEach((target) => {
+      recoveringGenerationIdsRef.current.add(target.versionId);
+    });
+
+    const service = resolveGenerationService(activeModel, providerKeys);
+    try {
+      const generations = await Promise.all(
+        targets.map(async (target) => ({
+          id: target.versionId,
+          payload: target.payload,
+          requestFingerprint: await buildDraftRequestFingerprint({
+            id: target.versionId,
+            model: service.model,
+            options: draftGenerationOptions,
+            payload: target.payload,
+            provider: service.provider,
+          }),
+        })),
+      );
+      const body = await prepareGenerationApiBody({
+        apiKey: service.apiKey,
+        generations,
+        model: service.model,
+        options: draftGenerationOptions,
+        provider: service.provider,
+        timeoutMs: generationWorkflowTimeoutMs,
+      });
+      const response = await postGenerationApi<{
+        ok: boolean;
+        records?: GenerationApiRecord[];
+      }>("/api/generations", body);
+
+      for (const record of response.records ?? []) {
+        await updateDraftVersionFromRecord(record);
+      }
+    } catch (error) {
+      const apiError = getGenerationApiError(error);
+      const ids = getGenerationApiErrorIds(apiError, targets);
+
+      if (apiError?.code === "generation_request_exists") {
+        await recoverDraftVersions(
+          targets
+            .filter((target) => ids.includes(target.versionId))
+            .map((target) => ({
+              draftId: target.draftId,
+              fragmentId: target.fragmentId,
+              versionId: target.versionId,
+            })),
+        );
+        return;
+      }
+
+      if (apiError?.code === "generation_id_conflict") {
+        await Promise.all(
+          targets
+            .filter((target) => ids.includes(target.versionId))
+            .map((target) =>
+              updateDraftVersionStatus(target.versionId, {
+                content: tx("generation.idConflict"),
+                status: "failed",
+              }),
+            ),
+        );
+        return;
+      }
+
+      await recoverDraftVersions(
+        targets.map((target) => ({
+          draftId: target.draftId,
+          fragmentId: target.fragmentId,
+          versionId: target.versionId,
+        })),
+      );
+    } finally {
+      targets.forEach((target) => {
+        recoveringGenerationIdsRef.current.delete(target.versionId);
+      });
+    }
+  }
+
+  async function requestFragmentTitle(fragment: FragmentItem) {
+    const service = resolveGenerationService(activeModel, providerKeys);
+    const id = createId("title");
+    const payload = {
+      fragment: {
+        content: fragment.content,
+        id: fragment.id,
+      },
+    };
+    const requestFingerprint = await buildTitleRequestFingerprint({
+      id,
+      model: service.model,
+      options: titleGenerationOptions,
+      payload,
+      provider: service.provider,
+    });
+
+    try {
+      const body = await prepareGenerationApiBody({
+        apiKey: service.apiKey,
+        id,
+        model: service.model,
+        options: titleGenerationOptions,
+        payload,
+        provider: service.provider,
+        requestFingerprint,
+        timeoutMs: 60_000,
+      });
+      const response = await postGenerationApi<{
+        ok: boolean;
+        title?: string | null;
+      }>("/api/generation-title", body);
+      const title = response.title?.trim();
+
+      if (!title) return;
+
+      await updatePersistedFragmentTitle(fragment.id, title, new Date().toISOString());
+      setFragments((current) =>
+        current.map((item) =>
+          item.id === fragment.id ? { ...item, title } : item,
+        ),
+      );
+    } catch {
+      // Title generation is helpful, not required for collecting a fragment.
+    }
+  }
+
+  async function updateDraftVersionFromRecord(record: GenerationApiRecord) {
+    if (record.status === "running") {
+      await updateDraftVersionStatus(record.id, {
+        deadlineAt: record.deadlineAt ?? undefined,
+        status: "brewing",
+      });
+      return;
+    }
+
+    if (record.status === "succeeded") {
+      await updateDraftVersionStatus(record.id, {
+        content: record.output?.content?.trim() || tx("pages.drafts.pendingPreview"),
+        deadlineAt: record.deadlineAt ?? undefined,
+        status: "completed",
+      });
+      return;
+    }
+
+    await updateDraftVersionStatus(record.id, {
+      content: record.error?.message ?? tx("status.failed"),
+      deadlineAt: record.deadlineAt ?? undefined,
+      status: "failed",
+    });
+  }
+
+  async function updateDraftVersionStatus(
+    versionId: string,
+    patch: Partial<Pick<DraftVersion, "content" | "deadlineAt" | "status">>,
+  ) {
+    await updatePersistedDraftVersion(versionId, patch);
+    setFragments((current) => updateDraftVersionInFragments(current, versionId, patch));
+  }
+
   async function collectFragment(content: string, selection: SchemeSelection) {
     const createdAt = new Date().toISOString();
-    const title = createFragmentTitle(content);
+    const title = tx("compose.createTitleFallback");
     const pickedSchemes = schemes.flatMap((scheme) => {
       const item = selection[scheme.id];
       if (!item?.selected) return [];
       return [{ scheme, count: item.count }];
     });
-
-    const fragment: FragmentItem = {
+    const fragmentBase = {
       id: createId("fragment"),
       title,
       content,
       createdAt,
       updatedAt: createdAt,
-      drafts: pickedSchemes.map(({ scheme, count }) =>
-        createDraft({
-          scheme,
-          fragmentContent: content,
-          count,
-        }),
-      ),
+    };
+    const draftPlans = pickedSchemes.map(({ scheme, count }) =>
+      createPendingDraftGenerationPlan({
+        count,
+        fragment: fragmentBase,
+        laws,
+        scheme,
+        startVersionNo: 1,
+      }),
+    );
+
+    const fragment: FragmentItem = {
+      ...fragmentBase,
+      drafts: draftPlans.map((plan) => plan.draft),
     };
 
     await insertPersistedFragment(fragment);
     setFragments((current) => [fragment, ...current]);
     setComposeOpen(false);
+    void requestFragmentTitle(fragment);
+    void requestDraftGenerations(draftPlans.flatMap((plan) => plan.targets));
     return fragment.id;
   }
 
@@ -1287,11 +1644,14 @@ export default function App() {
     );
 
     if (!existingDraft) {
-      const draft = createDraft({
-        scheme,
-        fragmentContent: fragment.content,
+      const plan = createPendingDraftGenerationPlan({
         count: safeCount,
+        fragment,
+        laws,
+        scheme,
+        startVersionNo: 1,
       });
+      const { draft } = plan;
 
       await insertPersistedDraft(fragmentId, draft, now);
       setFragments((current) =>
@@ -1305,16 +1665,19 @@ export default function App() {
             : item,
         ),
       );
+      void requestDraftGenerations(plan.targets);
       return;
     }
 
-    const versions = Array.from({ length: safeCount }, (_, index) =>
-      createDraftVersion({
-        scheme,
-        fragmentContent: fragment.content,
-        versionNo: existingDraft.versions.length + index + 1,
-      }),
-    );
+    const plan = createPendingDraftGenerationPlan({
+      count: safeCount,
+      draftId: existingDraft.id,
+      fragment,
+      laws,
+      scheme,
+      startVersionNo: existingDraft.versions.length + 1,
+    });
+    const versions = plan.draft.versions;
 
     await insertPersistedDraftVersions(fragmentId, existingDraft.id, versions);
     setFragments((current) =>
@@ -1342,6 +1705,7 @@ export default function App() {
         };
       }),
     );
+    void requestDraftGenerations(plan.targets);
   }
 
   async function appendDraftVersion(
@@ -1622,7 +1986,13 @@ export default function App() {
                   laws,
                   schemes,
                 }}
-                settings={{ activeModelId, languageId, themeId, version: 1 }}
+                settings={{
+                  activeModelId,
+                  languageId,
+                  providerKeys,
+                  themeId,
+                  version: 1,
+                }}
               />
             )}
           </RootStack.Screen>
@@ -1662,6 +2032,10 @@ export default function App() {
                     settings.activeModelId === null
                   ) {
                     setActiveModelId(settings.activeModelId);
+                  }
+
+                  if (isProviderKeys(settings.providerKeys)) {
+                    setProviderKeys(settings.providerKeys);
                   }
                 }}
               />
@@ -1794,6 +2168,7 @@ export default function App() {
                   onEditVersion={async (content) => {
                     const version = createDraftVersionFromContent({
                       content,
+                      sourceVersion: latestDraftVersion(draft),
                       versionNo: draft.versions.length + 1,
                     });
 
@@ -1805,16 +2180,24 @@ export default function App() {
                       await addDraft(fragment.id, scheme);
                     }
                   }}
-                  onRetryVersion={async () => {
+                  onRetryVersion={async (sourceVersion) => {
                     if (!scheme) return null;
 
-                    const version = createDraftVersion({
+                    const plan = createPendingDraftGenerationPlan({
+                      count: 1,
+                      draftId: draft.id,
+                      fragment,
+                      laws,
                       scheme,
-                      fragmentContent: fragment.content,
-                      versionNo: draft.versions.length + 1,
+                      snapshot: getRetrySnapshot(sourceVersion, fragment, scheme, laws),
+                      startVersionNo: draft.versions.length + 1,
                     });
+                    const version = plan.draft.versions[0];
+
+                    if (!version) return null;
 
                     await appendDraftVersion(fragment.id, draft.id, version);
+                    void requestDraftGenerations(plan.targets);
                     return version.id;
                   }}
                   onViewScheme={() => {
@@ -4178,7 +4561,9 @@ function DraftDetail({
   onDeleteVersion: (versionId: string) => Promise<void> | void;
   onEditVersion: (content: string) => Promise<string | null> | string | null;
   onGenerate: () => Promise<void> | void;
-  onRetryVersion: () => Promise<string | null> | string | null;
+  onRetryVersion: (
+    version: DraftVersion,
+  ) => Promise<string | null> | string | null;
   onViewScheme: () => void;
   scheme?: Scheme;
 }) {
@@ -4209,9 +4594,15 @@ function DraftDetail({
   const actionVersion =
     draft.versions.find((version) => version.id === actionVersionId) ??
     activeVersion;
-  const selectedLaw = laws.find((law) => law.id === lawDetailId);
   const schemeDescription =
     scheme?.content ?? tx("pages.drafts.schemeUnavailable");
+  const sourceSnapshot = actionVersion?.snapshot ?? activeVersion?.snapshot;
+  const sourceSchemeDescription = getSnapshotSchemeDescription(
+    sourceSnapshot,
+    schemeDescription,
+  );
+  const sourceLaws = getSnapshotLaws(sourceSnapshot, laws);
+  const selectedLaw = sourceLaws.find((law) => law.id === lawDetailId);
   const activeVersionIndex = activeVersion
     ? draft.versions.findIndex((version) => version.id === activeVersion.id)
     : -1;
@@ -4294,8 +4685,9 @@ function DraftDetail({
     }
   }
 
-  async function retryVersion() {
-    const nextVersionId = await onRetryVersion();
+  async function retryVersion(version: DraftVersion) {
+    setActionVersionId(version.id);
+    const nextVersionId = await onRetryVersion(version);
 
     if (nextVersionId) {
       setActiveVersionId(nextVersionId);
@@ -4517,7 +4909,7 @@ function DraftDetail({
                         <Pressable
                           accessibilityLabel={tx("pages.drafts.retryA11y")}
                           style={styles.draftVersionActionButton}
-                          onPress={retryVersion}
+                          onPress={() => retryVersion(item)}
                         >
                           <RotateCcw
                             color={colors.text}
@@ -4628,16 +5020,16 @@ function DraftDetail({
                   numberOfLines={3}
                   onMorePress={() => setSchemeDetailOpen(true)}
                   style={styles.versionModalText}
-                  text={schemeDescription}
+                  text={sourceSchemeDescription}
                 />
               </View>
               <View style={styles.versionModalSection}>
                 <Text style={styles.versionModalLabel}>
                   {tx("pages.drafts.lawsTitle")}
                 </Text>
-                {laws.length > 0 ? (
+                {sourceLaws.length > 0 ? (
                   <View style={styles.draftLawPillRow}>
-                    {laws.map((law) => (
+                    {sourceLaws.map((law) => (
                       <Pressable
                         key={law.id}
                         style={styles.lawPillButton}
@@ -4685,7 +5077,9 @@ function DraftDetail({
               contentContainerStyle={styles.versionModalScrollInner}
               showsVerticalScrollIndicator={false}
             >
-              <Text style={styles.versionModalText}>{schemeDescription}</Text>
+              <Text style={styles.versionModalText}>
+                {sourceSchemeDescription}
+              </Text>
             </ScrollView>
             <View style={styles.centerModalActions}>
               <Pressable
@@ -5279,59 +5673,171 @@ function estimateFragmentPreviewHeight(
   return Math.round(Math.min(maxHeight, Math.max(minHeight, naturalHeight)));
 }
 
-function createDraft({
-  scheme,
-  fragmentContent,
+function createPendingDraftGenerationPlan({
   count,
+  draftId = createId("draft"),
+  fragment,
+  laws,
+  scheme,
+  snapshot,
+  startVersionNo,
 }: {
-  scheme: Scheme;
-  fragmentContent: string;
   count: Count | number;
-}): Draft {
+  draftId?: string;
+  fragment: Pick<FragmentItem, "content" | "id" | "title">;
+  laws: Law[];
+  scheme: Scheme;
+  snapshot?: SchemeGenerationSnapshot;
+  startVersionNo: number;
+}): {
+  draft: Draft;
+  targets: DraftGenerationTarget[];
+} {
+  const safeCount = Math.min(3, Math.max(1, Math.floor(count)));
+  const generationSnapshot =
+    snapshot ?? createSchemeGenerationSnapshot({ fragment, laws, scheme });
+  const createdAt = new Date().toISOString();
+  const deadlineAt = new Date(
+    Date.now() + generationWorkflowTimeoutMs + generationDeadlineBufferMs,
+  ).toISOString();
+  const versions = Array.from({ length: safeCount }, (_, index) => {
+    const version: DraftVersion = {
+      content: tx("pages.drafts.pendingPreview"),
+      createdAt,
+      deadlineAt,
+      id: createId("version"),
+      snapshot: generationSnapshot,
+      status: "brewing",
+      versionNo: startVersionNo + index,
+    };
+
+    return version;
+  });
+
   return {
-    id: createId("draft"),
-    schemeId: scheme.id,
-    versions: Array.from({ length: count }, (_, index) =>
-      createDraftVersion({
-        scheme,
-        fragmentContent,
-        versionNo: index + 1,
-      }),
-    ),
+    draft: {
+      id: draftId,
+      schemeId: scheme.id,
+      versions,
+    },
+    targets: versions.map((version) => ({
+      draftId,
+      fragmentId: fragment.id,
+      payload: generationSnapshot.content,
+      snapshot: generationSnapshot,
+      versionId: version.id,
+    })),
   };
 }
 
-function createDraftVersion({
+function createSchemeGenerationSnapshot({
+  fragment,
+  laws,
   scheme,
-  fragmentContent,
-  versionNo,
 }: {
+  fragment: Pick<FragmentItem, "content" | "id" | "title">;
+  laws: Law[];
   scheme: Scheme;
-  fragmentContent: string;
-  versionNo: number;
-}): DraftVersion {
+}): SchemeGenerationSnapshot {
   return {
-    id: createId("version"),
-    versionNo,
-    status: "completed",
-    createdAt: new Date().toISOString(),
-    content: `这是根据「${scheme.title}」整理出的第 ${versionNo} 版初稿。\n\n${fragmentContent}\n\n接下来可以把开头再收紧一点，保留最有意思的判断，让它更适合直接拿去继续编辑。`,
+    content: {
+      fragment: {
+        content: fragment.content,
+        id: fragment.id,
+        title: fragment.title,
+      },
+      laws: scheme.lawIds.flatMap((lawId) => {
+        const law = laws.find((item) => item.id === lawId);
+
+        return law
+          ? [
+              {
+                content: law.content,
+                id: law.id,
+                title: law.title,
+              },
+            ]
+          : [];
+      }),
+      scheme: {
+        content: scheme.content,
+        id: scheme.id,
+        title: scheme.title,
+      },
+    },
+    type: "scheme",
+    version: 1,
   };
+}
+
+function getRetrySnapshot(
+  sourceVersion: DraftVersion,
+  fragment: FragmentItem,
+  scheme: Scheme,
+  laws: Law[],
+) {
+  return sourceVersion.snapshot.type === "scheme"
+    ? sourceVersion.snapshot
+    : createSchemeGenerationSnapshot({ fragment, laws, scheme });
+}
+
+function createUnavailableSnapshot(reason: string): UnavailableGenerationSnapshot {
+  return {
+    content: {
+      reason,
+    },
+    type: "unavailable",
+    version: 1,
+  };
+}
+
+function getSnapshotSchemeDescription(
+  snapshot: GenerationSnapshot | undefined,
+  fallback: string,
+) {
+  return snapshot?.type === "scheme" ? snapshot.content.scheme.content : fallback;
+}
+
+function getSnapshotLaws(snapshot: GenerationSnapshot | undefined, fallback: Law[]) {
+  if (snapshot?.type !== "scheme") return fallback;
+
+  const now = new Date().toISOString();
+
+  return snapshot.content.laws.map((law) => ({
+    content: law.content,
+    createdAt: now,
+    id: law.id,
+    tags: [],
+    title: law.title,
+    updatedAt: now,
+  }));
 }
 
 function createDraftVersionFromContent({
   content,
+  sourceVersion,
   versionNo,
 }: {
   content: string;
+  sourceVersion?: DraftVersion;
   versionNo: number;
 }): DraftVersion {
   return {
-    id: createId("version"),
-    versionNo,
-    status: "completed",
-    createdAt: new Date().toISOString(),
     content,
+    createdAt: new Date().toISOString(),
+    deadlineAt: null,
+    id: createId("version"),
+    snapshot: sourceVersion
+      ? {
+          content: {
+            reason: `Manual edit from ${sourceVersion.id}`,
+          },
+          type: "unavailable",
+          version: 1,
+        }
+      : createUnavailableSnapshot("manual_edit"),
+    status: "completed",
+    versionNo,
   };
 }
 
@@ -5689,8 +6195,10 @@ type DraftRow = {
 type DraftVersionRow = {
   content: string;
   created_at: string;
+  deadline_at: string | null;
   draft_id: string;
   id: string;
+  snapshot_json: string;
   status: string;
   version_no: number;
 };
@@ -5738,7 +6246,9 @@ async function readPersistedWorkspaceData(): Promise<BackupDataPayload> {
     versions.push({
       content: row.content,
       createdAt: row.created_at,
+      deadlineAt: row.deadline_at,
       id: row.id,
+      snapshot: parseGenerationSnapshot(row.snapshot_json),
       status: parseDraftStatus(row.status),
       versionNo: row.version_no,
     });
@@ -5814,6 +6324,22 @@ async function updatePersistedFragmentContent(
   await db.runAsync(
     "UPDATE fragments SET content = ?, updated_at = ? WHERE id = ?",
     content,
+    updatedAt,
+    fragmentId,
+  );
+}
+
+async function updatePersistedFragmentTitle(
+  fragmentId: string,
+  title: string,
+  updatedAt: string,
+) {
+  if (Platform.OS === "web") return;
+
+  const db = await getWorkspaceDatabase();
+  await db.runAsync(
+    "UPDATE fragments SET title = ?, updated_at = ? WHERE id = ?",
+    title,
     updatedAt,
     fragmentId,
   );
@@ -5899,6 +6425,40 @@ async function insertPersistedDraftVersions(
       fragmentId,
     );
   });
+}
+
+async function updatePersistedDraftVersion(
+  versionId: string,
+  patch: Partial<Pick<DraftVersion, "content" | "deadlineAt" | "status">>,
+) {
+  if (Platform.OS === "web") return;
+
+  const updates: string[] = [];
+  const values: Array<string | null> = [];
+
+  if (patch.content !== undefined) {
+    updates.push("content = ?");
+    values.push(patch.content);
+  }
+
+  if (patch.deadlineAt !== undefined) {
+    updates.push("deadline_at = ?");
+    values.push(patch.deadlineAt);
+  }
+
+  if (patch.status !== undefined) {
+    updates.push("status = ?");
+    values.push(patch.status);
+  }
+
+  if (updates.length === 0) return;
+
+  const db = await getWorkspaceDatabase();
+  await db.runAsync(
+    `UPDATE draft_versions SET ${updates.join(", ")} WHERE id = ?`,
+    ...values,
+    versionId,
+  );
 }
 
 async function deletePersistedDraftVersion(
@@ -6029,6 +6589,8 @@ async function migrateWorkspaceDatabase(db: WorkspaceDatabase) {
       version_no INTEGER NOT NULL,
       status TEXT NOT NULL CHECK(status IN ('brewing', 'completed', 'failed', 'expired')),
       content TEXT NOT NULL,
+      deadline_at TEXT,
+      snapshot_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
       FOREIGN KEY (draft_id) REFERENCES drafts(id) ON DELETE CASCADE
     );
@@ -6159,13 +6721,15 @@ async function insertDraftVersionRow(
 ) {
   await db.runAsync(
     `INSERT OR REPLACE INTO draft_versions
-      (id, draft_id, version_no, status, content, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+      (id, draft_id, version_no, status, content, deadline_at, snapshot_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     version.id,
     draftId,
     version.versionNo,
     version.status,
     version.content,
+    version.deadlineAt,
+    JSON.stringify(version.snapshot),
     version.createdAt,
   );
 }
@@ -6191,6 +6755,105 @@ function parseDraftStatus(status: string): DraftVersion["status"] {
   )
     ? status
     : "failed";
+}
+
+function parseGenerationSnapshot(raw: string | null | undefined): GenerationSnapshot {
+  if (!raw) return createUnavailableSnapshot("missing_snapshot");
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+
+    return isGenerationSnapshot(parsed)
+      ? parsed
+      : createUnavailableSnapshot("invalid_snapshot");
+  } catch {
+    return createUnavailableSnapshot("invalid_snapshot");
+  }
+}
+
+function isGenerationSnapshot(value: unknown): value is GenerationSnapshot {
+  if (!value || typeof value !== "object") return false;
+
+  const snapshot = value as Partial<GenerationSnapshot>;
+
+  if (snapshot.type === "scheme" && snapshot.version === 1) {
+    const content = snapshot.content as
+      | Partial<SchemeGenerationSnapshot["content"]>
+      | undefined;
+
+    return Boolean(
+      content?.fragment &&
+        content.scheme &&
+        Array.isArray(content.laws),
+    );
+  }
+
+  if (snapshot.type === "rewrite" && snapshot.version === 1) {
+    const content = snapshot.content as
+      | Partial<RewriteGenerationSnapshot["content"]>
+      | undefined;
+
+    return Boolean(
+      typeof content?.instruction === "string" &&
+        typeof content.sourceContent === "string" &&
+        typeof content.sourceVersionId === "string",
+    );
+  }
+
+  if (snapshot.type === "unavailable" && snapshot.version === 1) {
+    const content = snapshot.content as
+      | Partial<UnavailableGenerationSnapshot["content"]>
+      | undefined;
+
+    return typeof content?.reason === "string";
+  }
+
+  return false;
+}
+
+function getPendingDraftVersionRefs(fragments: FragmentItem[]) {
+  return fragments.flatMap((fragment) =>
+    fragment.drafts.flatMap((draft) =>
+      draft.versions.flatMap((version) =>
+        version.status === "brewing"
+          ? [
+              {
+                draftId: draft.id,
+                fragmentId: fragment.id,
+                versionId: version.id,
+              },
+            ]
+          : [],
+      ),
+    ),
+  );
+}
+
+function updateDraftVersionInFragments(
+  fragments: FragmentItem[],
+  versionId: string,
+  patch: Partial<Pick<DraftVersion, "content" | "deadlineAt" | "status">>,
+) {
+  const updatedAt = new Date().toISOString();
+
+  return fragments.map((fragment) => {
+    let touched = false;
+    const drafts = fragment.drafts.map((draft) => {
+      const versions = draft.versions.map((version) => {
+        if (version.id !== versionId) return version;
+
+        touched = true;
+        return {
+          ...version,
+          ...patch,
+        };
+      });
+
+      return touched ? { ...draft, versions } : draft;
+    });
+
+    return touched ? { ...fragment, drafts, updatedAt } : fragment;
+  });
 }
 
 async function readPersistedMobileSettings() {
@@ -6411,8 +7074,19 @@ function isBackupSettingsPayload(
   return (
     isThemeId(payload.themeId) ||
     isLanguageId(payload.languageId) ||
+    isProviderKeys(payload.providerKeys) ||
     typeof payload.activeModelId === "string" ||
     payload.activeModelId === null
+  );
+}
+
+function isProviderKeys(value: unknown): value is ProviderKeys {
+  if (!value || typeof value !== "object") return false;
+
+  const payload = value as Partial<Record<ProviderId, unknown>>;
+
+  return modelProviders.every(
+    (provider) => typeof payload[provider.id] === "string",
   );
 }
 
@@ -6451,6 +7125,364 @@ function getAvailableModels(providerKeys: ProviderKeys): AvailableModelOption[] 
       providerName: provider.name,
     }));
   });
+}
+
+function resolveGenerationService(
+  activeModel: AvailableModelOption | null,
+  providerKeys: ProviderKeys,
+): GenerationService {
+  if (!activeModel) {
+    return {
+      model: generationProviderDefaults.mock,
+      provider: "mock",
+    };
+  }
+
+  return {
+    apiKey: providerKeys[activeModel.providerId].trim(),
+    model: getModelNameFromId(activeModel.id),
+    provider: activeModel.providerId,
+  };
+}
+
+function getModelNameFromId(modelId: string) {
+  return modelId.includes(":") ? modelId.split(":").slice(1).join(":") : modelId;
+}
+
+async function buildDraftRequestFingerprint({
+  id,
+  model,
+  options,
+  payload,
+  provider,
+}: {
+  id: string;
+  model: string;
+  options: typeof draftGenerationOptions;
+  payload: DraftGenerationPayload;
+  provider: GenerationProviderId;
+}) {
+  return requestFingerprint({
+    generation: {
+      id,
+      payload,
+      title: null,
+    },
+    kind: "draft",
+    model,
+    options,
+    provider,
+    schemaVersion: 1,
+  });
+}
+
+async function buildTitleRequestFingerprint({
+  id,
+  model,
+  options,
+  payload,
+  provider,
+}: {
+  id: string;
+  model: string;
+  options: typeof titleGenerationOptions;
+  payload: { fragment: { content: string; id: string } };
+  provider: GenerationProviderId;
+}) {
+  return requestFingerprint({
+    id,
+    kind: "title",
+    model,
+    options,
+    payload,
+    provider,
+    schemaVersion: 1,
+  });
+}
+
+async function requestFingerprint(value: unknown) {
+  const hash = await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    stableStringify(value),
+  );
+
+  return `sha256:${hash}`;
+}
+
+function stableStringify(value: unknown) {
+  return JSON.stringify(normalizeStableValue(value));
+}
+
+function normalizeStableValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(normalizeStableValue);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, child]) => child !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, normalizeStableValue(child)]),
+    );
+  }
+
+  return value;
+}
+
+async function prepareGenerationApiBody<T extends Record<string, unknown>>(
+  request: T,
+) {
+  const withEncryptedApiKey = await maybeEncryptProviderApiKey(request);
+
+  return maybeEncryptRequestBody(withEncryptedApiKey);
+}
+
+async function maybeEncryptProviderApiKey<T extends Record<string, unknown>>(
+  request: T,
+) {
+  const apiKey = typeof request.apiKey === "string" ? request.apiKey : "";
+  const publicKey = apiKeyEncryptionPublicJwk?.trim();
+
+  if (!apiKey || !publicKey || !canUseWebCrypto()) {
+    return request;
+  }
+
+  const encryptedApiKey = await encryptRsaOaepPayload(apiKey, publicKey);
+  const { apiKey: _apiKey, ...rest } = request;
+
+  return {
+    ...rest,
+    encryptedApiKey,
+  };
+}
+
+async function maybeEncryptRequestBody(request: Record<string, unknown>) {
+  const publicKey = requestEncryptionPublicJwk?.trim();
+
+  if (!publicKey || !canUseWebCrypto()) {
+    return request;
+  }
+
+  const subtle = globalThis.crypto.subtle;
+  const aesKey = await subtle.generateKey(
+    { length: 256, name: "AES-GCM" },
+    true,
+    ["encrypt", "decrypt"],
+  );
+  const aesRaw = await subtle.exportKey("raw", aesKey);
+  const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await subtle.encrypt(
+    { iv, name: "AES-GCM" },
+    aesKey,
+    new TextEncoder().encode(JSON.stringify(request)),
+  );
+  const encryptedKey = await encryptRsaOaepBytes(aesRaw, publicKey);
+
+  return {
+    encryptedRequest: {
+      alg: "A256GCM+RSA-OAEP-256",
+      ciphertext: bytesToBase64Url(ciphertext),
+      encryptedKey: bytesToBase64Url(encryptedKey),
+      encoding: "base64url",
+      iv: bytesToBase64Url(iv),
+    },
+    schemaVersion: 1,
+  };
+}
+
+async function encryptRsaOaepPayload(value: string, publicJwk: string) {
+  const ciphertext = await encryptRsaOaepBytes(
+    new TextEncoder().encode(value),
+    publicJwk,
+  );
+
+  return {
+    alg: "RSA-OAEP-256",
+    ciphertext: bytesToBase64Url(ciphertext),
+    encoding: "base64url",
+  };
+}
+
+async function encryptRsaOaepBytes(value: BufferSource, publicJwk: string) {
+  const publicKey = await globalThis.crypto.subtle.importKey(
+    "jwk",
+    JSON.parse(publicJwk) as JsonWebKey,
+    { hash: "SHA-256", name: "RSA-OAEP" },
+    false,
+    ["encrypt"],
+  );
+
+  return globalThis.crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, value);
+}
+
+function canUseWebCrypto() {
+  return Boolean(globalThis.crypto?.subtle && globalThis.crypto.getRandomValues);
+}
+
+function bytesToBase64Url(value: ArrayBuffer | ArrayBufferView) {
+  const bytes =
+    value instanceof ArrayBuffer
+      ? new Uint8Array(value)
+      : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  let binary = "";
+
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index] ?? 0);
+  }
+
+  return globalThis
+    .btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+async function postGenerationApi<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${generationApiBaseUrl}${path}`, {
+    body: JSON.stringify(body),
+    headers: {
+      "content-type": "application/json",
+    },
+    method: "POST",
+  });
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {};
+
+  if (!response.ok) {
+    throw new GenerationApiRequestError(data);
+  }
+
+  return data as T;
+}
+
+async function followGenerationRecords(
+  ids: string[],
+): Promise<GenerationRecoveryResult> {
+  const url = `${generationApiBaseUrl}/api/generations/follow?ids=${ids
+    .map(encodeURIComponent)
+    .join(",")}&intervalMs=1000`;
+  const response = await fetch(url, {
+    headers: {
+      accept: "text/event-stream",
+    },
+  });
+
+  if (!response.ok || !response.body || !("getReader" in response.body)) {
+    return pullGenerationRecords(ids);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const records = new Map<string, GenerationApiRecord>();
+  const expiredIds = new Set<string>();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    while (buffer.includes("\n\n")) {
+      const boundary = buffer.indexOf("\n\n");
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const event = parseSseEvent(block);
+
+      if (event?.event === "generation.record" && event.data?.record) {
+        records.set(event.data.record.id, event.data.record);
+      }
+
+      if (event?.event === "generation.expired" && event.data?.id) {
+        expiredIds.add(event.data.id);
+      }
+
+      if (
+        event?.event === "generation.done" ||
+        event?.event === "generation.pause" ||
+        event?.event === "generation.error"
+      ) {
+        return {
+          expiredIds: [...expiredIds],
+          records: [...records.values()],
+        };
+      }
+    }
+  }
+
+  return {
+    expiredIds: [...expiredIds],
+    records: [...records.values()],
+  };
+}
+
+async function pullGenerationRecords(
+  ids: string[],
+): Promise<GenerationRecoveryResult> {
+  const response = await postGenerationApi<{
+    missing?: Array<{ id: string; status: "expired" }>;
+    records?: GenerationApiRecord[];
+  }>("/api/generations/pull", { ids });
+
+  return {
+    expiredIds: response.missing?.map((item) => item.id) ?? [],
+    records: response.records ?? [],
+  };
+}
+
+function parseSseEvent(block: string) {
+  const lines = block.split("\n").filter((line) => !line.startsWith(":"));
+  const eventLine = lines.find((line) => line.startsWith("event:"));
+  const dataLines = lines
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart());
+
+  if (!eventLine && dataLines.length === 0) return null;
+
+  return {
+    data: dataLines.length > 0 ? JSON.parse(dataLines.join("\n")) : null,
+    event: eventLine ? eventLine.slice(6).trim() : "message",
+  } as {
+    data: { id?: string; record?: GenerationApiRecord } | null;
+    event: string;
+  };
+}
+
+class GenerationApiRequestError extends Error {
+  details: unknown;
+
+  constructor(details: unknown) {
+    const apiError = getGenerationApiError(details);
+
+    super(apiError?.message ?? "Generation API request failed.");
+    this.details = details;
+  }
+}
+
+function getGenerationApiError(error: unknown): GenerationApiError | null {
+  const details =
+    error instanceof GenerationApiRequestError ? error.details : error;
+
+  if (!details || typeof details !== "object") return null;
+
+  const maybeError = (details as { error?: unknown }).error;
+
+  if (!maybeError || typeof maybeError !== "object") return null;
+
+  return maybeError as GenerationApiError;
+}
+
+function getGenerationApiErrorIds(
+  error: GenerationApiError | null,
+  targets: DraftGenerationTarget[],
+) {
+  const ids = error?.details?.ids;
+
+  return Array.isArray(ids) && ids.length > 0
+    ? ids.filter((id): id is string => typeof id === "string")
+    : targets.map((target) => target.versionId);
 }
 
 function createThemedStyles(colors: ThemeColors) {
