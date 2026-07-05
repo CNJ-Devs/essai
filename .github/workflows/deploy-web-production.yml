@@ -176,4 +176,20 @@ jobs:
 
       - name: Deploy Web/API
         if: steps.release.outputs.deploy == 'true'
-        run: vercel deploy --prebuilt --prod --meta essaiReleaseTag=$RELEASE_REF --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          GIT_OWNER: ${{ github.repository_owner }}
+          GIT_REPO: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          GIT_SHA="$(git rev-parse HEAD)"
+
+          vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN" \
+            --meta "essaiReleaseTag=$RELEASE_REF" \
+            --meta "githubDeployment=1" \
+            --meta "githubOrg=$GIT_OWNER" \
+            --meta "githubRepo=$GIT_REPO" \
+            --meta "githubCommitOrg=$GIT_OWNER" \
+            --meta "githubCommitRepo=$GIT_REPO" \
+            --meta "githubCommitRef=$RELEASE_REF" \
+            --meta "githubCommitSha=$GIT_SHA"
