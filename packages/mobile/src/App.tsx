@@ -29,6 +29,7 @@ import {
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import Carousel, { type ICarouselInstance } from "react-native-reanimated-carousel";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { Toaster, toast } from "sonner-native";
 import type {
   KeyboardEvent,
   NativeScrollEvent,
@@ -37,7 +38,6 @@ import type {
   ViewStyle,
 } from "react-native";
 import {
-  Alert,
   Keyboard,
   Modal,
   Platform,
@@ -2452,8 +2452,30 @@ export default function App() {
           }
         }}
       />
+      <AppToaster isDark={Boolean(activeTheme.isDark)} />
       </SafeAreaProvider>
     </GestureHandlerRootView>
+  );
+}
+
+function AppToaster({ isDark }: { isDark: boolean }) {
+  const insets = useSafeAreaInsets();
+
+  return (
+    <Toaster
+      closeButton={false}
+      duration={2600}
+      offset={insets.top + 12}
+      position="top-center"
+      theme={isDark ? "dark" : "light"}
+      toastOptions={{
+        descriptionStyle: styles.toastDescription,
+        style: styles.toast,
+        textContainerStyle: styles.toastTextContainer,
+        titleStyle: styles.toastTitle,
+      }}
+      visibleToasts={2}
+    />
   );
 }
 
@@ -7820,24 +7842,24 @@ function showGenerationModelRequired() {
   const title = tx("generation.modelRequiredTitle");
   const message = tx("generation.modelRequired");
 
-  if (Platform.OS === "web") {
-    globalThis.alert?.(`${title}\n${message}`);
-    return;
-  }
-
-  Alert.alert(title, message);
+  showAppToast(title, message, "warning");
 }
 
 function showGenerationConfigRequired() {
   const title = tx("generation.configRequiredTitle");
   const message = tx("generation.configRequired");
 
-  if (Platform.OS === "web") {
-    globalThis.alert?.(`${title}\n${message}`);
-    return;
-  }
+  showAppToast(title, message, "error");
+}
 
-  Alert.alert(title, message);
+function showAppToast(
+  title: string,
+  description?: string,
+  variant: "info" | "success" | "warning" | "error" = "info",
+) {
+  toast[variant](title, {
+    description,
+  });
 }
 
 function getModelNameFromId(modelId: string) {
@@ -8098,6 +8120,31 @@ function createThemedStyles(colors: ThemeColors) {
   },
   gestureRoot: {
     flex: 1,
+  },
+  toast: {
+    backgroundColor: colors.card,
+    borderColor: colors.cardBorder,
+    borderRadius: 14,
+    borderWidth: 1,
+    shadowColor: colors.text,
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 7 },
+    elevation: 5,
+  },
+  toastTextContainer: {
+    gap: 2,
+  },
+  toastTitle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "800",
+    lineHeight: 20,
+  },
+  toastDescription: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 19,
   },
   shell: {
     flex: 1,
