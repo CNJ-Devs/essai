@@ -461,6 +461,7 @@ const mobileResources = {
           editA11y: "编辑稿件",
           retryA11y: "重试生成",
           rewriteA11y: "改写稿件",
+          collectFragmentA11y: "收作新碎片",
           rewriteTitle: "改写这一稿",
           rewriteDescription: "写下你想调整的方向，我会基于当前稿件生成一版新的内容。",
           rewriteSourceTitle: "当前稿件",
@@ -754,6 +755,7 @@ const mobileResources = {
           editA11y: "Edit draft",
           retryA11y: "Retry generation",
           rewriteA11y: "Rewrite draft",
+          collectFragmentA11y: "Collect as new fragment",
           rewriteTitle: "Rewrite this draft",
           rewriteDescription: "Describe what should change, and EssAI will create a new version from the current draft.",
           rewriteSourceTitle: "Current draft",
@@ -1263,6 +1265,7 @@ export default function App() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
+  const [composeInitialContent, setComposeInitialContent] = useState("");
   const [schemeEditorOpen, setSchemeEditorOpen] = useState(false);
   const [lawEditorOpen, setLawEditorOpen] = useState(false);
   const [editingSchemeId, setEditingSchemeId] = useState<string | null>(null);
@@ -1791,6 +1794,7 @@ export default function App() {
     await insertPersistedFragment(fragment);
     setFragments((current) => [fragment, ...current]);
     setComposeOpen(false);
+    setComposeInitialContent("");
     void requestFragmentTitle(fragment);
     void requestDraftGenerations(draftPlans.flatMap((plan) => plan.targets));
     return fragment.id;
@@ -2127,6 +2131,16 @@ export default function App() {
     setLawEditorOpen(true);
   }
 
+  function openComposeSheet(initialContent = "") {
+    setComposeInitialContent(initialContent);
+    setComposeOpen(true);
+  }
+
+  function closeComposeSheet() {
+    setComposeOpen(false);
+    setComposeInitialContent("");
+  }
+
   function pushStack<RouteName extends keyof RootStackParamList>(
     routeName: RouteName,
     params: RootStackParamList[RouteName],
@@ -2240,7 +2254,7 @@ export default function App() {
                   <BottomNav
                     activeTab={activeTab}
                     onChange={setActiveTab}
-                    onCreateFragment={() => setComposeOpen(true)}
+                    onCreateFragment={() => openComposeSheet()}
                   />
                 </View>
 
@@ -2561,6 +2575,7 @@ export default function App() {
                       await addDraft(fragment.id, scheme);
                     }
                   }}
+                  onCollectVersion={(content) => openComposeSheet(content)}
                   onRetryVersion={async (sourceVersion) => {
                     if (sourceVersion.snapshot.type === "rewrite") {
                       const plan = createPendingRewriteGenerationPlan({
@@ -2716,9 +2731,10 @@ export default function App() {
         </RootStack.Navigator>
       </NavigationContainer>
       <ComposeSheet
+        initialContent={composeInitialContent}
         schemes={schemes}
         visible={composeOpen}
-        onClose={() => setComposeOpen(false)}
+        onClose={closeComposeSheet}
         onSubmit={async (content, selection) => {
           const id = await collectFragment(content, selection);
           pushStack("FragmentDetail", { id });
@@ -4534,11 +4550,13 @@ function LawCard({
 }
 
 function ComposeSheet({
+  initialContent,
   schemes,
   visible,
   onClose,
   onSubmit,
 }: {
+  initialContent: string;
   schemes: Scheme[];
   visible: boolean;
   onClose: () => void;
@@ -4590,9 +4608,9 @@ function ComposeSheet({
   useEffect(() => {
     if (!visible) return;
 
-    setContent("");
+    setContent(initialContent);
     setSelection(createDefaultSchemeSelection(schemes));
-  }, [visible, schemes]);
+  }, [visible, initialContent, schemes]);
 
   function setCount(schemeId: string, count: Count) {
     setSelection((current) => ({
@@ -5652,6 +5670,7 @@ function DraftSummaryCard({
 function DraftDetail({
   draft,
   laws,
+  onCollectVersion,
   onDeleteVersion,
   onEditVersion,
   onGenerate,
@@ -5662,6 +5681,7 @@ function DraftDetail({
 }: {
   draft: Draft;
   laws: Law[];
+  onCollectVersion: (content: string) => void;
   onDeleteVersion: (versionId: string) => Promise<void> | void;
   onEditVersion: (content: string) => Promise<string | null> | string | null;
   onGenerate: () => Promise<void> | void;
@@ -6101,6 +6121,23 @@ function DraftDetail({
                         {item.content || tx("pages.drafts.pendingPreview")}
                       </Text>
                     </ScrollView>
+                    <Pressable
+                      accessibilityLabel={tx("pages.drafts.collectFragmentA11y")}
+                      disabled={item.status !== "completed" || !item.content.trim()}
+                      style={[
+                        styles.draftRewriteButton,
+                        styles.draftCollectFragmentButton,
+                        (item.status !== "completed" || !item.content.trim()) &&
+                          styles.buttonDisabled,
+                      ]}
+                      onPress={() => onCollectVersion(item.content)}
+                    >
+                      <FileText
+                        color={colors.primary}
+                        size={17}
+                        strokeWidth={2.35}
+                      />
+                    </Pressable>
                     <Pressable
                       accessibilityLabel={tx("pages.drafts.rewriteA11y")}
                       style={styles.draftRewriteButton}
@@ -10526,6 +10563,14 @@ function createThemedStyles(colors: ThemeColors) {
     shadowOffset: { width: 0, height: 6 },
     width: 48,
     zIndex: 10,
+  },
+  draftCollectFragmentButton: {
+    backgroundColor: colors.card,
+    borderColor: colors.primary,
+    bottom: 14,
+    height: 44,
+    right: 68,
+    width: 44,
   },
   rewriteDrawerBody: {
     flex: 1,
