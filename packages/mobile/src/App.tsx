@@ -127,6 +127,7 @@ type Scheme = {
 type Law = {
   id: string;
   title: string;
+  description: string;
   content: string;
   tags: string[];
   createdAt: string;
@@ -308,7 +309,7 @@ type PersistedMobileSettings = {
 };
 
 type BackupDataPayload = {
-  schemaVersion: 2;
+  schemaVersion: 3;
   fragments: FragmentItem[];
   laws: Law[];
   schemes: Scheme[];
@@ -322,9 +323,9 @@ type ParsedBackupBundle = {
 };
 
 const mobileSettingsStorageKey = "essai.mobile.settings.v1";
-const backupDataSchemaVersion = 2;
+const backupDataSchemaVersion = 3;
 const workspaceDatabaseName = "essai-workspace.db";
-const workspaceSchemaVersion = 5;
+const workspaceSchemaVersion = 6;
 
 const mobileResources = {
   "zh-Hans": {
@@ -1618,6 +1619,7 @@ export default function App() {
     const law: Law = {
       id: createId("law"),
       title: safeTitle,
+      description: "",
       content,
       tags,
       createdAt: now,
@@ -1671,6 +1673,7 @@ export default function App() {
       const law: Law = {
         id: createId("law"),
         title: safeTitle,
+        description: "",
         content: safeContent,
         tags,
         createdAt: now,
@@ -6868,6 +6871,7 @@ type SchemeLawRow = {
 type LawRow = {
   content: string;
   created_at: string;
+  description: string | null;
   id: string;
   tags_json: string;
   title: string;
@@ -6979,6 +6983,7 @@ async function readPersistedWorkspaceData(): Promise<BackupDataPayload> {
     laws: lawRows.map((row) => ({
       content: row.content,
       createdAt: row.created_at,
+      description: row.description ?? "",
       id: row.id,
       tags: parseStringArray(row.tags_json),
       title: row.title,
@@ -7220,8 +7225,9 @@ async function migrateWorkspaceDatabase(db: WorkspaceDatabase) {
     "PRAGMA user_version",
   );
   const currentVersion = versionRow?.user_version ?? 0;
+  const shouldRebuildLegacySchema = currentVersion > 0 && currentVersion < 5;
 
-  if (currentVersion > 0 && currentVersion < workspaceSchemaVersion) {
+  if (shouldRebuildLegacySchema) {
     await dropWorkspaceTables(db);
   }
 
@@ -7232,6 +7238,7 @@ async function migrateWorkspaceDatabase(db: WorkspaceDatabase) {
     CREATE TABLE IF NOT EXISTS laws (
       id TEXT PRIMARY KEY NOT NULL,
       title TEXT NOT NULL,
+      description TEXT,
       content TEXT NOT NULL,
       tags_json TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
@@ -7290,9 +7297,30 @@ async function migrateWorkspaceDatabase(db: WorkspaceDatabase) {
     CREATE INDEX IF NOT EXISTS idx_drafts_scheme_id ON drafts(scheme_id);
     CREATE UNIQUE INDEX IF NOT EXISTS uq_draft_versions_draft_id_version_no
       ON draft_versions(draft_id, version_no);
-
-    PRAGMA user_version = ${workspaceSchemaVersion};
   `);
+
+  if (!shouldRebuildLegacySchema && currentVersion > 0 && currentVersion < 6) {
+    await addColumnIfMissing(db, "laws", "description", "TEXT");
+  }
+
+  await db.execAsync(`PRAGMA user_version = ${workspaceSchemaVersion};`);
+}
+
+async function addColumnIfMissing(
+  db: WorkspaceDatabase,
+  tableName: string,
+  columnName: string,
+  columnDefinition: string,
+) {
+  const columns = await db.getAllAsync<{ name: string }>(
+    `PRAGMA table_info(${tableName})`,
+  );
+
+  if (columns.some((column) => column.name === columnName)) return;
+
+  await db.execAsync(
+    `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition};`,
+  );
 }
 
 async function runWorkspaceTransaction(
@@ -7327,10 +7355,11 @@ async function dropWorkspaceTables(db: WorkspaceDatabase) {
 async function upsertLawRow(db: WorkspaceDatabase, law: Law) {
   await db.runAsync(
     `INSERT OR REPLACE INTO laws
-      (id, title, content, tags_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+      (id, title, description, content, tags_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
     law.id,
     law.title,
+    law.description || null,
     law.content,
     JSON.stringify(law.tags),
     law.createdAt,
@@ -7695,14 +7724,16 @@ async function pickBackupBundle(): Promise<ParsedBackupBundle | null> {
   if (!asset) return null;
 
   const zip = await loadPickedZip(asset);
-  const data = await readBackupJson<BackupDataPayload>(zip, "data.json");
+  const data = parseBackupDataPayload(
+    await readBackupJson<unknown>(zip, "data.json"),
+  );
   const settings = await readBackupJson<Partial<PersistedMobileSettings>>(
     zip,
     "settings.json",
   );
   const available = {
     config: isBackupSettingsPayload(settings),
-    data: isBackupDataPayload(data),
+    data: Boolean(data),
   };
 
   if (!available.config && !available.data) {
@@ -7741,17 +7772,34 @@ async function readBackupJson<T>(zip: JSZip, path: string) {
   return JSON.parse(await file.async("string")) as T;
 }
 
-function isBackupDataPayload(value: unknown): value is BackupDataPayload {
-  if (!value || typeof value !== "object") return false;
+function parseBackupDataPayload(value: unknown): BackupDataPayload | undefined {
+  if (!value || typeof value !== "object") return undefined;
 
-  const payload = value as Partial<BackupDataPayload>;
+  const payload = value as Record<string, unknown>;
+  const schemaVersion = payload.schemaVersion;
 
-  return (
-    payload.schemaVersion === backupDataSchemaVersion &&
-    Array.isArray(payload.fragments) &&
-    Array.isArray(payload.laws) &&
-    Array.isArray(payload.schemes)
-  );
+  if (
+    (schemaVersion !== 2 && schemaVersion !== backupDataSchemaVersion) ||
+    !Array.isArray(payload.fragments) ||
+    !Array.isArray(payload.laws) ||
+    !Array.isArray(payload.schemes)
+  ) {
+    return undefined;
+  }
+
+  return {
+    schemaVersion: backupDataSchemaVersion,
+    fragments: payload.fragments as FragmentItem[],
+    laws: (payload.laws as Law[]).map(normalizeBackupLaw),
+    schemes: payload.schemes as Scheme[],
+  };
+}
+
+function normalizeBackupLaw(law: Law | (Omit<Law, "description"> & { description?: unknown })): Law {
+  return {
+    ...law,
+    description: typeof law.description === "string" ? law.description : "",
+  };
 }
 
 function isBackupSettingsPayload(
