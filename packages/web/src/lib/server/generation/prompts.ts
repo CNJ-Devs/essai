@@ -7,6 +7,8 @@ import { copy } from "@/lib/i18n";
 import type { Fragment, SchemeSnapshot } from "@/lib/types";
 import type { DraftPayload, RewriteDraftPayload, TitlePayload } from "./schemas";
 
+const generatedTitleMaxLength = 14;
+
 export function buildDraftGenerationPrompt(payload: DraftPayload) {
   if (isRewriteDraftPayload(payload)) {
     return buildRewriteGenerationPrompt(payload);
@@ -99,5 +101,5 @@ export function normalizeGeneratedTitle(content: string) {
     .split("\n")[0]
     .replace(/^["“”'「」]+|["“”'「」]+$/g, "")
     .trim()
-    .slice(0, 40);
+    .slice(0, generatedTitleMaxLength);
 }

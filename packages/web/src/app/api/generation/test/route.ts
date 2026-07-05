@@ -15,7 +15,7 @@ const ROUTE_TERMINATION_BUFFER_MS = 60_000;
 const MAX_TIMEOUT_MS = ROUTE_MAX_DURATION_MS - ROUTE_TERMINATION_BUFFER_MS;
 const DEFAULT_TIMEOUT_MS = MAX_TIMEOUT_MS;
 const FINALIZATION_RESERVE_MS = 15_000;
-const DEFAULT_MAX_OUTPUT_TOKENS = 65_536;
+const ANTHROPIC_UNBOUNDED_DRAFT_MAX_TOKENS = 64_000;
 
 const providerSchema = z.enum(["openai", "deepseek", "anthropic"]);
 type Provider = z.infer<typeof providerSchema>;
@@ -46,7 +46,7 @@ const requestSchema = z.object({
     .number()
     .int()
     .min(64)
-    .default(DEFAULT_MAX_OUTPUT_TOKENS),
+    .optional(),
   timeoutMs: z
     .number()
     .int()
@@ -303,8 +303,11 @@ async function callOpenAI({
     model,
     instructions,
     input: prompt,
-    max_output_tokens: input.maxOutputTokens,
   };
+
+  if (typeof input.maxOutputTokens === "number") {
+    body.max_output_tokens = input.maxOutputTokens;
+  }
 
   if (input.reasoningEffort && input.reasoningEffort !== "none") {
     body.reasoning = { effort: input.reasoningEffort };
@@ -338,9 +341,12 @@ async function callDeepSeek({
       { role: "system", content: instructions },
       { role: "user", content: prompt },
     ],
-    max_tokens: input.maxOutputTokens,
     stream: false,
   };
+
+  if (typeof input.maxOutputTokens === "number") {
+    body.max_tokens = input.maxOutputTokens;
+  }
 
   if (typeof input.temperature === "number") {
     body.temperature = input.temperature;
@@ -377,7 +383,8 @@ async function callAnthropic({
 }: ProviderCallInput) {
   const body: Record<string, unknown> = {
     model,
-    max_tokens: input.maxOutputTokens,
+    max_tokens:
+      input.maxOutputTokens ?? ANTHROPIC_UNBOUNDED_DRAFT_MAX_TOKENS,
     system: instructions,
     messages: [{ role: "user", content: prompt }],
   };

@@ -7,6 +7,7 @@ import { GenerationRequestError } from "./errors";
 import type { Provider, ProviderOptions } from "./schemas";
 
 const proxyAgent = new EnvHttpProxyAgent();
+const ANTHROPIC_UNBOUNDED_DRAFT_MAX_TOKENS = 64_000;
 
 export type ProviderResult = {
   content: string;
@@ -86,8 +87,11 @@ async function callOpenAI({
     model,
     instructions,
     input: prompt,
-    max_output_tokens: options.maxOutputTokens,
   };
+
+  if (typeof options.maxOutputTokens === "number") {
+    body.max_output_tokens = options.maxOutputTokens;
+  }
 
   if (options.reasoningEffort && options.reasoningEffort !== "none") {
     body.reasoning = { effort: options.reasoningEffort };
@@ -121,9 +125,12 @@ async function callDeepSeek({
       { role: "system", content: instructions },
       { role: "user", content: prompt },
     ],
-    max_tokens: options.maxOutputTokens,
     stream: false,
   };
+
+  if (typeof options.maxOutputTokens === "number") {
+    body.max_tokens = options.maxOutputTokens;
+  }
 
   if (typeof options.temperature === "number") {
     body.temperature = options.temperature;
@@ -160,7 +167,8 @@ async function callAnthropic({
 }: ProviderCallInput) {
   const body: Record<string, unknown> = {
     model,
-    max_tokens: options.maxOutputTokens,
+    max_tokens:
+      options.maxOutputTokens ?? ANTHROPIC_UNBOUNDED_DRAFT_MAX_TOKENS,
     system: instructions,
     messages: [{ role: "user", content: prompt }],
   };

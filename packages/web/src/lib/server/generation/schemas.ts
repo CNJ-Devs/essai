@@ -12,7 +12,6 @@ export type GenerationKind = z.infer<typeof generationKindSchema>;
 export const generationStatusSchema = z.enum(["running", "succeeded", "failed"]);
 export type GenerationStatus = z.infer<typeof generationStatusSchema>;
 
-export const draftMaxOutputTokensDefault = 65_536;
 export const titleMaxOutputTokensDefault = 96;
 
 export const encryptedApiKeySchema = z.object({
@@ -44,10 +43,7 @@ const providerOptionsInputSchema = z.object({
 
 export const providerOptionsSchema = providerOptionsInputSchema
   .default({})
-  .transform((options) => ({
-    ...options,
-    maxOutputTokens: options.maxOutputTokens ?? draftMaxOutputTokensDefault,
-  }));
+  .transform((options) => options);
 
 const titleProviderOptionsSchema = providerOptionsInputSchema
   .default({})

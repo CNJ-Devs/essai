@@ -57,9 +57,7 @@ async function runProviderSuite({ baseUrl, provider }) {
   const generationId = `smoke_${provider.name}_${Date.now()}`;
   const titleId = `smoke_title_${provider.name}_${Date.now()}`;
   const model = provider.model ?? providerDefaults[provider.name];
-  const generationOptions = {
-    maxOutputTokens: 512,
-  };
+  const generationOptions = {};
   const generationPayload = sampleDraftPayload();
   const generationInput = withDraftFingerprint({
     id: generationId,
@@ -78,7 +76,6 @@ async function runProviderSuite({ baseUrl, provider }) {
       model,
       apiKey: provider.apiKey,
       generations: [generationInput],
-      options: generationOptions,
       timeoutMs: 240000,
     },
   );
@@ -104,7 +101,6 @@ async function runProviderSuite({ baseUrl, provider }) {
       model,
       apiKey: provider.apiKey,
       generations: [generationInput],
-      options: generationOptions,
     },
     409,
   );
@@ -133,7 +129,6 @@ async function runProviderSuite({ baseUrl, provider }) {
       model,
       apiKey: provider.apiKey,
       generations: [conflictingInput],
-      options: generationOptions,
     },
     409,
   );
