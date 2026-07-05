@@ -321,6 +321,13 @@ type GenerationRecoveryResult = {
   records: GenerationApiRecord[];
 };
 
+type DraftVersionRef = {
+  createdAt?: string;
+  draftId: string;
+  fragmentId: string;
+  versionId: string;
+};
+
 type TransferSectionId = "data" | "config";
 
 type PersistedMobileSettings = {
@@ -406,6 +413,7 @@ const mobileResources = {
         idConflict: "这次生成任务的 ID 和另一条任务冲突了，请重新出稿。",
         modelRequired: "先在设置里添加服务密钥并选择模型，再开始出稿。",
         modelRequiredTitle: "还没有可用模型",
+        recoveryFailed: "生成服务暂时无法连接，这次任务没有完成。",
       },
       pages: {
         fragments: {
@@ -700,6 +708,7 @@ const mobileResources = {
         idConflict: "This generation ID conflicts with another task. Please draft again.",
         modelRequired: "Add a service key and choose a model in Settings before drafting.",
         modelRequiredTitle: "No model available",
+        recoveryFailed: "The generation service is unreachable. This task was not completed.",
       },
       pages: {
         fragments: {
@@ -1154,6 +1163,8 @@ const fragmentMasonryMinColumnWidth = 156;
 const fragmentMasonryGap = 8;
 const generationWorkflowTimeoutMs = 240_000;
 const generationDeadlineBufferMs = 30_000;
+const generationRecoveryIntervalMs = 5 * 60_000;
+const generationRecoveryGraceMs = 60_000;
 const generationApiBaseUrl =
   process.env.EXPO_PUBLIC_GENERATION_API_BASE_URL ??
   (Platform.OS === "android" ? "http://10.0.2.2:3000" : "http://localhost:3000");
@@ -1281,6 +1292,7 @@ export default function App() {
   const activeModel =
     availableModels.find((model) => model.id === activeModelId) ?? null;
   const recoveringGenerationIdsRef = useRef(new Set<string>());
+  const fragmentsRef = useRef<FragmentItem[]>(initialFragments);
 
   const editingScheme = useMemo(
     () => schemes.find((scheme) => scheme.id === editingSchemeId),
@@ -1298,6 +1310,10 @@ export default function App() {
       () => undefined,
     );
   }, [activeTheme]);
+
+  useEffect(() => {
+    fragmentsRef.current = fragments;
+  }, [fragments]);
 
   useEffect(() => {
     let mounted = true;
@@ -1502,9 +1518,33 @@ export default function App() {
   }
 
   useEffect(() => {
-    const pendingRefs = getPendingDraftVersionRefs(fragments).filter(
-      (item) => !recoveringGenerationIdsRef.current.has(item.versionId),
-    );
+    recoverEligibleDraftVersions({
+      failOnConnectionFailure: false,
+      sourceFragments: fragments,
+    });
+  }, [fragments]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      recoverEligibleDraftVersions({
+        failOnConnectionFailure: true,
+        sourceFragments: fragmentsRef.current,
+      });
+    }, generationRecoveryIntervalMs);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  function recoverEligibleDraftVersions({
+    failOnConnectionFailure,
+    sourceFragments,
+  }: {
+    failOnConnectionFailure: boolean;
+    sourceFragments: FragmentItem[];
+  }) {
+    const pendingRefs = getPendingDraftVersionRefs(sourceFragments, {
+      olderThanMs: generationRecoveryGraceMs,
+    }).filter((item) => !recoveringGenerationIdsRef.current.has(item.versionId));
 
     if (pendingRefs.length === 0) return;
 
@@ -1512,15 +1552,22 @@ export default function App() {
       recoveringGenerationIdsRef.current.add(item.versionId);
     });
 
-    void recoverDraftVersions(pendingRefs).finally(() => {
-      pendingRefs.forEach((item) => {
-        recoveringGenerationIdsRef.current.delete(item.versionId);
-      });
-    });
-  }, [fragments]);
+    void recoverDraftVersions(pendingRefs, { failOnConnectionFailure }).finally(
+      () => {
+        pendingRefs.forEach((item) => {
+          recoveringGenerationIdsRef.current.delete(item.versionId);
+        });
+      },
+    );
+  }
 
   async function recoverDraftVersions(
-    refs: Array<{ draftId: string; fragmentId: string; versionId: string }>,
+    refs: DraftVersionRef[],
+    {
+      failOnConnectionFailure = false,
+    }: {
+      failOnConnectionFailure?: boolean;
+    } = {},
   ) {
     if (refs.length === 0) return;
 
@@ -1538,7 +1585,19 @@ export default function App() {
 
         await applyGenerationRecovery(recovery);
       } catch {
-        // Keep local records brewing; the next recovery pass can try again.
+        if (!failOnConnectionFailure) {
+          // Keep local records brewing; the next recovery pass can try again.
+          return;
+        }
+
+        await Promise.all(
+          refs.map((ref) =>
+            updateDraftVersionStatus(ref.versionId, {
+              content: tx("generation.recoveryFailed"),
+              status: "failed",
+            }),
+          ),
+        );
       }
     }
   }
@@ -8296,13 +8355,24 @@ function isGenerationSnapshot(value: unknown): value is GenerationSnapshot {
   return false;
 }
 
-function getPendingDraftVersionRefs(fragments: FragmentItem[]) {
+function getPendingDraftVersionRefs(
+  fragments: FragmentItem[],
+  {
+    olderThanMs = 0,
+  }: {
+    olderThanMs?: number;
+  } = {},
+): DraftVersionRef[] {
+  const cutoff = olderThanMs > 0 ? Date.now() - olderThanMs : null;
+
   return fragments.flatMap((fragment) =>
     fragment.drafts.flatMap((draft) =>
       draft.versions.flatMap((version) =>
-        version.status === "brewing"
+        version.status === "brewing" &&
+        (cutoff === null || isIsoDateAtOrBefore(version.createdAt, cutoff))
           ? [
               {
+                createdAt: version.createdAt,
                 draftId: draft.id,
                 fragmentId: fragment.id,
                 versionId: version.id,
@@ -8312,6 +8382,12 @@ function getPendingDraftVersionRefs(fragments: FragmentItem[]) {
       ),
     ),
   );
+}
+
+function isIsoDateAtOrBefore(value: string, timestamp: number) {
+  const parsed = Date.parse(value);
+
+  return Number.isFinite(parsed) && parsed <= timestamp;
 }
 
 function updateDraftVersionInFragments(
