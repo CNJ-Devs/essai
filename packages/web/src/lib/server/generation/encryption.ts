@@ -11,6 +11,56 @@ export async function parseMaybeEncryptedBody<T>(
   body: unknown,
   schema: z.ZodType<T>,
 ) {
+  const prepared = await prepareMaybeEncryptedBody(body);
+
+  return schema.safeParse(prepared.body);
+}
+
+export async function parseMaybeEncryptedBodyWithRequestKey<T>(
+  body: unknown,
+  schema: z.ZodType<T>,
+) {
+  const prepared = await prepareMaybeEncryptedBody(body);
+
+  return {
+    ...schema.safeParse(prepared.body),
+    requestKey: prepared.requestKey,
+  };
+}
+
+export async function decryptWithRequestKey({
+  ciphertext,
+  encoding,
+  iv,
+  requestKey,
+}: {
+  ciphertext: BufferSource;
+  encoding: "base64url" | "base64";
+  iv: string;
+  requestKey: CryptoKey;
+}) {
+  try {
+    const plaintext = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: decodeBase64Payload(iv, encoding),
+      },
+      requestKey,
+      ciphertext,
+    );
+
+    return plaintext;
+  } catch {
+    throw new GenerationRequestError(
+      "decrypt_request_failed",
+      "Could not decrypt the encrypted request payload.",
+      400,
+      400,
+    );
+  }
+}
+
+async function prepareMaybeEncryptedBody(body: unknown) {
   const encrypted = encryptedRequestSchema.safeParse(body);
   const localEnvironment = isLocalGenerationEnvironment();
 
@@ -24,7 +74,7 @@ export async function parseMaybeEncryptedBody<T>(
       );
     }
 
-    return schema.safeParse(body);
+    return { body, requestKey: null };
   }
 
   if (!encrypted.success) {
@@ -36,7 +86,7 @@ export async function parseMaybeEncryptedBody<T>(
     );
   }
 
-  return schema.safeParse(await decryptRequestPayload(encrypted.data));
+  return decryptRequestPayload(encrypted.data);
 }
 
 export async function decryptApiKey(encryptedApiKey: EncryptedApiKey) {
@@ -103,19 +153,20 @@ async function decryptRequestPayload(envelope: EncryptedRequest) {
       false,
       ["decrypt"],
     );
-    const plaintext = await crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: decodeBase64Payload(encryptedRequest.iv, encryptedRequest.encoding),
-      },
-      aesKey,
-      decodeBase64Payload(
+    const plaintext = await decryptWithRequestKey({
+      ciphertext: decodeBase64Payload(
         encryptedRequest.ciphertext,
         encryptedRequest.encoding,
       ),
-    );
+      encoding: encryptedRequest.encoding,
+      iv: encryptedRequest.iv,
+      requestKey: aesKey,
+    });
 
-    return JSON.parse(new TextDecoder().decode(plaintext));
+    return {
+      body: JSON.parse(new TextDecoder().decode(plaintext)),
+      requestKey: aesKey,
+    };
   } catch {
     throw new GenerationRequestError(
       "decrypt_request_failed",

@@ -1,4 +1,4 @@
-import type { EncryptedApiKey, Provider } from "./schemas";
+import type { EncryptedApiKey } from "./schemas";
 import { decryptApiKey, isLocalGenerationEnvironment } from "./encryption";
 import { GenerationRequestError } from "./errors";
 
@@ -10,7 +10,7 @@ export async function resolveProviderApiKey({
 }: {
   explicitApiKey?: string;
   encryptedApiKey?: EncryptedApiKey;
-  provider: Provider;
+  provider: string;
   request: Request;
 }) {
   if (encryptedApiKey) {
