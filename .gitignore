@@ -45,6 +45,10 @@ yarn-error.log*
 .expo
 packages/mobile/android
 packages/mobile/ios
+packages/mobile/credentials.json
+packages/mobile/credentials/
+packages/mobile/*service-account*.json
+packages/mobile/*service_account*.json
 
 # typescript
 *.tsbuildinfo
