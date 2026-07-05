@@ -42,6 +42,8 @@ import {
   Modal,
   Platform,
   Pressable,
+  Animated,
+  Easing,
   ScrollView,
   StyleSheet,
   Text,
@@ -89,7 +91,10 @@ type Count = 1 | 2 | 3;
 type TabId = "fragments" | "schemes" | "laws" | "more";
 type ThemeId = "parchment" | "sage" | "rose" | "sky" | "mint" | "dark";
 type LanguageId = "system" | "zh-Hans" | "en";
-type ProviderId = "openai" | "deepseek" | "anthropic";
+type TextProviderId = "openai" | "deepseek" | "anthropic";
+type ProviderId = TextProviderId | "elevenlabs";
+type ProviderCapability = "text" | "stt";
+type VoiceInputMode = "native" | "cloud";
 
 type RootStackParamList = {
   Home: undefined;
@@ -194,6 +199,13 @@ type AppTheme = {
 };
 
 type ProviderKeys = Record<ProviderId, string>;
+type ProviderCapabilities = Record<ProviderId, ProviderCapability[]>;
+type VoiceInputSettings = {
+  cleanupEnabled: boolean;
+  cleanupModelId: string | null;
+  mode: VoiceInputMode;
+  sttModelId: string | null;
+};
 
 type SchemeGenerationSnapshot = {
   content: {
@@ -243,11 +255,22 @@ type GenerationSnapshot =
 type ModelOption = {
   id: string;
   name: string;
-  providerId: ProviderId;
+  providerId: TextProviderId;
   descriptionKey: string;
 };
 
 type AvailableModelOption = ModelOption & {
+  providerName: string;
+};
+
+type SttModelOption = {
+  id: string;
+  name: string;
+  providerId: ProviderId;
+  descriptionKey: string;
+};
+
+type AvailableSttModelOption = SttModelOption & {
   providerName: string;
 };
 
@@ -268,7 +291,7 @@ type DraftGenerationTarget = {
 type GenerationService = {
   apiKey?: string;
   model: string;
-  provider: ProviderId;
+  provider: TextProviderId;
 };
 
 type GenerationApiRecord = {
@@ -303,8 +326,10 @@ type TransferSectionId = "data" | "config";
 type PersistedMobileSettings = {
   activeModelId?: string | null;
   languageId?: LanguageId;
+  providerCapabilities?: ProviderCapabilities;
   providerKeys?: ProviderKeys;
   themeId?: ThemeId;
+  voiceInputSettings?: VoiceInputSettings;
   version: 1;
 };
 
@@ -478,13 +503,28 @@ const mobileResources = {
           importFailed: "无法读取这个备份文件。",
           appearanceLead: "选择喜欢的界面颜色。",
           languageLead: "选择界面显示语言。",
-          modelLead: "添加服务密钥后，选择一个当前用于生成的模型。",
+          modelLead: "先选择文字生成和语音输入的使用方式，再在下方管理服务密钥。",
           serviceKeysTitle: "服务密钥",
-          activeModelTitle: "当前模型",
+          activeModelTitle: "文本生成",
           noModelTitle: "还没有可用模型",
           noModelDescription: "添加一个服务密钥后，就可以选择模型。",
           added: "已添加",
           notAdded: "未添加",
+          voiceSectionTitle: "语音输入",
+          voiceInputTitle: "输入与整理",
+          voiceInputDescription: "选择语音转文字的路径，需要时再让模型轻整理转写文本。",
+          voiceModeLabel: "输入方式",
+          sttModelLabel: "音频模型",
+          cleanupTitle: "整理转写文本",
+          cleanupDescription: "用于纠正错字、补标点和清理口语停顿，不改变原意。",
+          notApplicable: "不适用",
+          noSttModelTitle: "还没有可用音频模型",
+          noSttModelDescription: "添加支持语音转文字的服务密钥后可选。",
+          sttModelNotApplicable: "音频模型不适用",
+          nativeSttDescription: "使用设备系统的语音识别，不需要选择云端模型。",
+          noCleanupModelTitle: "还没有可用整理模型",
+          noCleanupModelDescription: "添加支持文字生成的服务密钥后可选。",
+          cleanupOffDescription: "开启整理后再选择要使用的文字模型。",
           homeAppearanceDescription: "{{theme}} · 界面配色",
           homeModelDescription: "添加服务密钥后选择当前模型。",
           aboutDescription: "版本、说明和相关信息。",
@@ -517,6 +557,8 @@ const mobileResources = {
           openaiDescription: "适合日常生成、改写和标题整理。",
           openaiMiniDescription: "默认推荐，速度和效果比较均衡。",
           openaiFullDescription: "适合更复杂的整理和改写。",
+          openaiTranscribeMiniDescription: "适合日常语音转文字，速度和成本更轻。",
+          openaiTranscribeDescription: "适合质量要求更高的语音转写。",
           deepseekDescription: "适合轻量、批量的生成任务。",
           deepseekProDescription: "适合质量要求更高的稿件。",
           deepseekFlashDescription: "适合更快的轻量生成。",
@@ -524,6 +566,18 @@ const mobileResources = {
           claudeSonnetDescription: "默认推荐，适合多数创作任务。",
           claudeHaikuDescription: "更轻、更快，适合标题和短稿。",
           claudeFableDescription: "适合更复杂的长稿整理。",
+          elevenlabsDescription: "适合把录音或口述内容转写成文字。",
+          elevenlabsScribeDescription: "适合多语言语音转文字。",
+          capabilityRequiredTitle: "至少启用一种能力",
+          capabilityRequiredDescription: "如果暂时不用这个服务，可以清空上方的 API Key。",
+          capabilities: {
+            text: "文字生成",
+            stt: "语音转文字",
+          },
+          voiceMode: {
+            native: "系统原生",
+            cloud: "云端转写",
+          },
         },
       },
       about: {
@@ -742,13 +796,28 @@ const mobileResources = {
           importFailed: "This backup file could not be read.",
           appearanceLead: "Choose a color theme you like.",
           languageLead: "Choose the interface language.",
-          modelLead: "Add a service key, then choose the model used for generation.",
+          modelLead: "Choose text and voice behavior, then manage service keys below.",
           serviceKeysTitle: "Service Keys",
-          activeModelTitle: "Active Model",
+          activeModelTitle: "Text Generation",
           noModelTitle: "No model available",
           noModelDescription: "Add a service key to choose a model.",
           added: "Added",
           notAdded: "Not added",
+          voiceSectionTitle: "Voice Input",
+          voiceInputTitle: "Input and Cleanup",
+          voiceInputDescription: "Choose how speech becomes text, then optionally clean up the transcript.",
+          voiceModeLabel: "Input method",
+          sttModelLabel: "Audio model",
+          cleanupTitle: "Clean up transcript",
+          cleanupDescription: "Fix obvious typos, punctuation, and filler without changing the meaning.",
+          notApplicable: "Not applicable",
+          noSttModelTitle: "No audio model available",
+          noSttModelDescription: "Add a service key with speech-to-text enabled to choose one.",
+          sttModelNotApplicable: "Audio model not applicable",
+          nativeSttDescription: "Use the device speech recognizer. No cloud audio model is needed.",
+          noCleanupModelTitle: "No cleanup model available",
+          noCleanupModelDescription: "Add a service key with text generation enabled to choose one.",
+          cleanupOffDescription: "Enable cleanup to choose a text model.",
           homeAppearanceDescription: "{{theme}} · Interface colors",
           homeModelDescription: "Add a service key to choose the active model.",
           aboutDescription: "Version, notes, and related information.",
@@ -781,6 +850,8 @@ const mobileResources = {
           openaiDescription: "Good for everyday drafting, rewriting, and titles.",
           openaiMiniDescription: "Recommended by default, balancing speed and quality.",
           openaiFullDescription: "Better for more complex restructuring and rewriting.",
+          openaiTranscribeMiniDescription: "Good for everyday speech-to-text with lighter cost.",
+          openaiTranscribeDescription: "Better when transcription quality matters more.",
           deepseekDescription: "Good for lightweight and batch generation tasks.",
           deepseekProDescription: "Better when draft quality matters more.",
           deepseekFlashDescription: "Better for fast lightweight generation.",
@@ -788,6 +859,18 @@ const mobileResources = {
           claudeSonnetDescription: "Recommended for most writing tasks.",
           claudeHaikuDescription: "Lighter and faster for titles and short drafts.",
           claudeFableDescription: "Better for complex long-form drafts.",
+          elevenlabsDescription: "Good for turning recordings or spoken notes into text.",
+          elevenlabsScribeDescription: "Good for multilingual speech-to-text.",
+          capabilityRequiredTitle: "Keep at least one capability",
+          capabilityRequiredDescription: "Clear the API key above if you do not want to use this service.",
+          capabilities: {
+            text: "Text generation",
+            stt: "Speech to text",
+          },
+          voiceMode: {
+            native: "System native",
+            cloud: "Cloud STT",
+          },
         },
       },
       about: {
@@ -926,19 +1009,24 @@ const languageOptions: Array<{
   },
 ];
 
-const modelProviders: Array<{
+type ModelProvider = {
   id: ProviderId;
   name: string;
   keyLabel: string;
   keyPlaceholder: string;
+  capabilities: ProviderCapability[];
   descriptionKey: string;
   models: ModelOption[];
-}> = [
+  sttModels?: SttModelOption[];
+};
+
+const modelProviders: ModelProvider[] = [
   {
     id: "openai",
     name: "OpenAI",
     keyLabel: "OpenAI API Key",
     keyPlaceholder: "sk-...",
+    capabilities: ["text", "stt"],
     descriptionKey: "settings.models.openaiDescription",
     models: [
       {
@@ -954,12 +1042,27 @@ const modelProviders: Array<{
         descriptionKey: "settings.models.openaiFullDescription",
       },
     ],
+    sttModels: [
+      {
+        id: "openai:gpt-4o-mini-transcribe",
+        name: "GPT-4o mini Transcribe",
+        providerId: "openai",
+        descriptionKey: "settings.models.openaiTranscribeMiniDescription",
+      },
+      {
+        id: "openai:gpt-4o-transcribe",
+        name: "GPT-4o Transcribe",
+        providerId: "openai",
+        descriptionKey: "settings.models.openaiTranscribeDescription",
+      },
+    ],
   },
   {
     id: "deepseek",
     name: "DeepSeek",
     keyLabel: "DeepSeek API Key",
     keyPlaceholder: "sk-...",
+    capabilities: ["text"],
     descriptionKey: "settings.models.deepseekDescription",
     models: [
       {
@@ -981,6 +1084,7 @@ const modelProviders: Array<{
     name: "Anthropic",
     keyLabel: "Anthropic API Key",
     keyPlaceholder: "sk-ant-...",
+    capabilities: ["text"],
     descriptionKey: "settings.models.anthropicDescription",
     models: [
       {
@@ -1003,12 +1107,44 @@ const modelProviders: Array<{
       },
     ],
   },
+  {
+    id: "elevenlabs",
+    name: "ElevenLabs",
+    keyLabel: "ElevenLabs API Key",
+    keyPlaceholder: "sk_...",
+    capabilities: ["stt"],
+    descriptionKey: "settings.models.elevenlabsDescription",
+    models: [],
+    sttModels: [
+      {
+        id: "elevenlabs:scribe_v1",
+        name: "Scribe v1",
+        providerId: "elevenlabs",
+        descriptionKey: "settings.models.elevenlabsScribeDescription",
+      },
+    ],
+  },
 ];
 
 const emptyProviderKeys: ProviderKeys = {
   anthropic: "",
   deepseek: "",
+  elevenlabs: "",
   openai: "",
+};
+
+const defaultProviderCapabilities: ProviderCapabilities = {
+  anthropic: ["text"],
+  deepseek: ["text"],
+  elevenlabs: ["stt"],
+  openai: ["text"],
+};
+
+const defaultVoiceInputSettings: VoiceInputSettings = {
+  cleanupEnabled: false,
+  cleanupModelId: null,
+  mode: "native",
+  sttModelId: null,
 };
 
 const quickLawTagMaxLength = 24;
@@ -1023,7 +1159,7 @@ const requestEncryptionPublicJwk =
   process.env.EXPO_PUBLIC_REQUEST_ENCRYPTION_PUBLIC_JWK;
 const apiKeyEncryptionPublicJwk =
   process.env.EXPO_PUBLIC_API_KEY_ENCRYPTION_PUBLIC_JWK;
-const generationProviderDefaults: Record<ProviderId, string> = {
+const generationProviderDefaults: Record<TextProviderId, string> = {
   anthropic: "claude-sonnet-5",
   deepseek: "deepseek-v4-pro",
   openai: "gpt-5.4-mini",
@@ -1119,6 +1255,10 @@ export default function App() {
   const [fragments, setFragments] = useState<FragmentItem[]>(initialFragments);
   const [providerKeys, setProviderKeys] =
     useState<ProviderKeys>(emptyProviderKeys);
+  const [providerCapabilities, setProviderCapabilities] =
+    useState<ProviderCapabilities>(defaultProviderCapabilities);
+  const [voiceInputSettings, setVoiceInputSettings] =
+    useState<VoiceInputSettings>(defaultVoiceInputSettings);
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -1128,8 +1268,12 @@ export default function App() {
   const [editingSchemeId, setEditingSchemeId] = useState<string | null>(null);
   const [editingLawId, setEditingLawId] = useState<string | null>(null);
   const availableModels = useMemo(
-    () => getAvailableModels(providerKeys),
-    [providerKeys],
+    () => getAvailableModels(providerKeys, providerCapabilities),
+    [providerCapabilities, providerKeys],
+  );
+  const availableSttModels = useMemo(
+    () => getAvailableSttModels(providerKeys, providerCapabilities),
+    [providerCapabilities, providerKeys],
   );
   const activeModel =
     availableModels.find((model) => model.id === activeModelId) ?? null;
@@ -1194,8 +1338,23 @@ export default function App() {
           setActiveModelId(parsed.activeModelId);
         }
 
-        if (isProviderKeys(parsed.providerKeys)) {
-          setProviderKeys(parsed.providerKeys);
+        const parsedProviderKeys = normalizeProviderKeys(parsed.providerKeys);
+        if (parsedProviderKeys) {
+          setProviderKeys(parsedProviderKeys);
+        }
+
+        const parsedProviderCapabilities = normalizeProviderCapabilities(
+          parsed.providerCapabilities,
+        );
+        if (parsedProviderCapabilities) {
+          setProviderCapabilities(parsedProviderCapabilities);
+        }
+
+        const parsedVoiceInputSettings = normalizeVoiceInputSettings(
+          parsed.voiceInputSettings,
+        );
+        if (parsedVoiceInputSettings) {
+          setVoiceInputSettings(parsedVoiceInputSettings);
         }
       })
       .catch(() => {
@@ -1218,13 +1377,23 @@ export default function App() {
     const payload: PersistedMobileSettings = {
       activeModelId,
       languageId,
+      providerCapabilities,
       providerKeys,
       themeId,
+      voiceInputSettings,
       version: 1,
     };
 
     void writePersistedMobileSettings(payload).catch(() => undefined);
-  }, [activeModelId, languageId, providerKeys, settingsLoaded, themeId]);
+  }, [
+    activeModelId,
+    languageId,
+    providerCapabilities,
+    providerKeys,
+    settingsLoaded,
+    themeId,
+    voiceInputSettings,
+  ]);
 
   useEffect(() => {
     if (availableModels.length === 0) {
@@ -1239,6 +1408,95 @@ export default function App() {
       setActiveModelId(availableModels[0]?.id ?? null);
     }
   }, [activeModelId, availableModels]);
+
+  useEffect(() => {
+    setVoiceInputSettings((current) => {
+      if (current.mode !== "cloud") return current;
+
+      if (availableSttModels.length === 0) {
+        return {
+          ...current,
+          mode: "native",
+          sttModelId: null,
+        };
+      }
+
+      if (availableSttModels.some((model) => model.id === current.sttModelId)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        sttModelId: availableSttModels[0]?.id ?? null,
+      };
+    });
+  }, [availableSttModels, voiceInputSettings.mode, voiceInputSettings.sttModelId]);
+
+  useEffect(() => {
+    setVoiceInputSettings((current) => {
+      if (availableModels.length === 0) {
+        if (!current.cleanupEnabled && current.cleanupModelId === null) {
+          return current;
+        }
+
+        return {
+          ...current,
+          cleanupEnabled: false,
+          cleanupModelId: null,
+        };
+      }
+
+      if (
+        !current.cleanupEnabled ||
+        availableModels.some((model) => model.id === current.cleanupModelId)
+      ) {
+        return current;
+      }
+
+      return {
+        ...current,
+        cleanupModelId: availableModels[0]?.id ?? null,
+      };
+    });
+  }, [
+    availableModels,
+    voiceInputSettings.cleanupEnabled,
+    voiceInputSettings.cleanupModelId,
+  ]);
+
+  function toggleProviderCapability(
+    providerId: ProviderId,
+    capability: ProviderCapability,
+  ) {
+    setProviderCapabilities((current) => {
+      const provider = modelProviders.find((item) => item.id === providerId);
+
+      if (!provider?.capabilities.includes(capability)) {
+        return current;
+      }
+
+      const enabled = getProviderEnabledCapabilities(current, providerId);
+      const isEnabled = enabled.includes(capability);
+
+      if (isEnabled && enabled.length === 1) {
+        showAppToast(
+          tx("settings.models.capabilityRequiredTitle"),
+          tx("settings.models.capabilityRequiredDescription"),
+          "warning",
+        );
+        return current;
+      }
+
+      const nextCapabilities = isEnabled
+        ? enabled.filter((item) => item !== capability)
+        : [...enabled, capability];
+
+      return {
+        ...current,
+        [providerId]: orderProviderCapabilities(provider, nextCapabilities),
+      };
+    });
+  }
 
   useEffect(() => {
     const pendingRefs = getPendingDraftVersionRefs(fragments).filter(
@@ -2044,8 +2302,11 @@ export default function App() {
                 activeModel={activeModel}
                 activeModelId={activeModelId}
                 availableModels={availableModels}
+                availableSttModels={availableSttModels}
                 modelMenuOpen={modelMenuOpen}
+                providerCapabilities={providerCapabilities}
                 providerKeys={providerKeys}
+                voiceInputSettings={voiceInputSettings}
                 onChangeActiveModel={(modelId) => {
                   setActiveModelId(modelId);
                   setModelMenuOpen(false);
@@ -2056,6 +2317,13 @@ export default function App() {
                     [providerId]: value,
                   }));
                 }}
+                onChangeVoiceInputSettings={(next) => {
+                  setVoiceInputSettings((current) => ({
+                    ...current,
+                    ...next,
+                  }));
+                }}
+                onToggleProviderCapability={toggleProviderCapability}
                 onToggleModelMenu={() =>
                   setModelMenuOpen((current) => !current)
                 }
@@ -2085,8 +2353,10 @@ export default function App() {
                 settings={{
                   activeModelId,
                   languageId,
+                  providerCapabilities,
                   providerKeys,
                   themeId,
+                  voiceInputSettings,
                   version: 1,
                 }}
               />
@@ -2130,8 +2400,23 @@ export default function App() {
                     setActiveModelId(settings.activeModelId);
                   }
 
-                  if (isProviderKeys(settings.providerKeys)) {
-                    setProviderKeys(settings.providerKeys);
+                  const importedProviderKeys = normalizeProviderKeys(
+                    settings.providerKeys,
+                  );
+                  if (importedProviderKeys) {
+                    setProviderKeys(importedProviderKeys);
+                  }
+
+                  const importedProviderCapabilities =
+                    normalizeProviderCapabilities(settings.providerCapabilities);
+                  if (importedProviderCapabilities) {
+                    setProviderCapabilities(importedProviderCapabilities);
+                  }
+
+                  const importedVoiceInputSettings =
+                    normalizeVoiceInputSettings(settings.voiceInputSettings);
+                  if (importedVoiceInputSettings) {
+                    setVoiceInputSettings(importedVoiceInputSettings);
                   }
                 }}
               />
@@ -3235,21 +3520,36 @@ function ModelSettings({
   activeModel,
   activeModelId,
   availableModels,
+  availableSttModels,
   modelMenuOpen,
+  providerCapabilities,
   providerKeys,
+  voiceInputSettings,
   onChangeActiveModel,
   onChangeProviderKey,
+  onChangeVoiceInputSettings,
+  onToggleProviderCapability,
   onToggleModelMenu,
 }: {
   activeModel: AvailableModelOption | null;
   activeModelId: string | null;
   availableModels: AvailableModelOption[];
+  availableSttModels: AvailableSttModelOption[];
   modelMenuOpen: boolean;
+  providerCapabilities: ProviderCapabilities;
   providerKeys: ProviderKeys;
+  voiceInputSettings: VoiceInputSettings;
   onChangeActiveModel: (modelId: string) => void;
   onChangeProviderKey: (providerId: ProviderId, value: string) => void;
+  onChangeVoiceInputSettings: (settings: Partial<VoiceInputSettings>) => void;
+  onToggleProviderCapability: (
+    providerId: ProviderId,
+    capability: ProviderCapability,
+  ) => void;
   onToggleModelMenu: () => void;
 }) {
+  const [cleanupModelMenuOpen, setCleanupModelMenuOpen] = useState(false);
+  const [sttModelMenuOpen, setSttModelMenuOpen] = useState(false);
   const providerInputRefs = useRef<Partial<Record<ProviderId, TextInput | null>>>(
     {},
   );
@@ -3261,6 +3561,27 @@ function ModelSettings({
   } = useAndroidCoveredInputScrollGuard();
   const modelSettingsBottomPadding =
     Platform.OS === "android" ? keyboardHeight : 0;
+  const selectedSttModel =
+    availableSttModels.find(
+      (model) => model.id === voiceInputSettings.sttModelId,
+    ) ??
+    availableSttModels[0] ??
+    null;
+  const selectedCleanupModel =
+    availableModels.find(
+      (model) => model.id === voiceInputSettings.cleanupModelId,
+    ) ??
+    activeModel ??
+    availableModels[0] ??
+    null;
+  const cloudSttSelected = voiceInputSettings.mode === "cloud";
+  const cleanupAvailable = availableModels.length > 0;
+
+  useEffect(() => {
+    if (!cleanupAvailable || !voiceInputSettings.cleanupEnabled) {
+      setCleanupModelMenuOpen(false);
+    }
+  }, [cleanupAvailable, voiceInputSettings.cleanupEnabled]);
 
   return (
     <StackScreenSurface>
@@ -3325,30 +3646,230 @@ function ModelSettings({
         </View>
 
         <Text style={styles.sectionTitle}>
+          {tx("pages.settings.voiceSectionTitle")}
+        </Text>
+        <View style={styles.providerCard}>
+          <View style={styles.providerHeader}>
+            <View style={styles.settingChoiceText}>
+              <Text style={styles.settingChoiceTitle}>
+                {tx("pages.settings.voiceInputTitle")}
+              </Text>
+              <Text style={styles.settingChoiceDescription}>
+                {tx("pages.settings.voiceInputDescription")}
+              </Text>
+            </View>
+          </View>
+
+          <Text style={styles.inputLabel}>
+            {tx("pages.settings.voiceModeLabel")}
+          </Text>
+          <View style={styles.segmentedRow}>
+            {(["native", "cloud"] satisfies VoiceInputMode[]).map((mode) => {
+              const disabled = mode === "cloud" && availableSttModels.length === 0;
+
+              return (
+                <Pressable
+                  key={mode}
+                  disabled={disabled}
+                  style={[
+                    styles.segmentButton,
+                    voiceInputSettings.mode === mode &&
+                      styles.segmentButtonActive,
+                    disabled && styles.buttonDisabled,
+                  ]}
+                  onPress={() => {
+                    onChangeVoiceInputSettings({ mode });
+                    if (mode === "native") {
+                      setSttModelMenuOpen(false);
+                    }
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.segmentButtonText,
+                      voiceInputSettings.mode === mode &&
+                        styles.segmentButtonTextActive,
+                    ]}
+                  >
+                    {tx(`settings.models.voiceMode.${mode}`)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <Pressable
+            disabled={!cloudSttSelected || availableSttModels.length === 0}
+            style={[
+              styles.modelSelectButton,
+              (!cloudSttSelected || availableSttModels.length === 0) &&
+                styles.buttonDisabled,
+            ]}
+            onPress={() => setSttModelMenuOpen((current) => !current)}
+          >
+            <View style={styles.settingChoiceText}>
+              <Text style={styles.settingChoiceTitle}>
+                {cloudSttSelected
+                  ? selectedSttModel?.name ??
+                    tx("pages.settings.noSttModelTitle")
+                  : tx("pages.settings.sttModelNotApplicable")}
+              </Text>
+              <Text style={styles.settingChoiceDescription}>
+                {cloudSttSelected
+                  ? selectedSttModel
+                    ? `${selectedSttModel.providerName} · ${getSttModelDescription(
+                        selectedSttModel,
+                      )}`
+                    : tx("pages.settings.noSttModelDescription")
+                  : tx("pages.settings.nativeSttDescription")}
+              </Text>
+            </View>
+            <ChevronRight
+              color={colors.muted}
+              size={18}
+              strokeWidth={2.35}
+              style={[
+                styles.modelSelectChevron,
+                sttModelMenuOpen && styles.modelSelectChevronOpen,
+              ]}
+            />
+          </Pressable>
+
+          {sttModelMenuOpen && cloudSttSelected && availableSttModels.length > 0 ? (
+            <View style={styles.modelOptionList}>
+              {availableSttModels.map((model) => (
+                <SettingChoice
+                  key={model.id}
+                  description={`${model.providerName} · ${getSttModelDescription(
+                    model,
+                  )}`}
+                  selected={model.id === selectedSttModel?.id}
+                  title={model.name}
+                  onPress={() => {
+                    onChangeVoiceInputSettings({ sttModelId: model.id });
+                    setSttModelMenuOpen(false);
+                  }}
+                />
+              ))}
+            </View>
+          ) : null}
+
+          <View style={styles.settingsSwitchBlock}>
+            <View style={styles.settingsSwitchTitleRow}>
+              <Text style={[styles.settingChoiceTitle, styles.settingsSwitchTitle]}>
+                {tx("pages.settings.cleanupTitle")}
+              </Text>
+              <MiniSwitch
+                disabled={!cleanupAvailable}
+                selected={voiceInputSettings.cleanupEnabled && cleanupAvailable}
+                onPress={() => {
+                  if (!cleanupAvailable) return;
+
+                  const cleanupEnabled = !voiceInputSettings.cleanupEnabled;
+
+                  onChangeVoiceInputSettings({
+                    cleanupEnabled,
+                    cleanupModelId:
+                      cleanupEnabled && selectedCleanupModel
+                        ? selectedCleanupModel.id
+                        : voiceInputSettings.cleanupModelId,
+                  });
+                  if (!cleanupEnabled) {
+                    setCleanupModelMenuOpen(false);
+                  }
+                }}
+              />
+            </View>
+            <Text style={styles.settingChoiceDescription}>
+              {tx("pages.settings.cleanupDescription")}
+            </Text>
+          </View>
+          <Pressable
+            disabled={
+              !voiceInputSettings.cleanupEnabled || availableModels.length === 0
+            }
+            style={[
+              styles.modelSelectButton,
+              (!voiceInputSettings.cleanupEnabled ||
+                availableModels.length === 0) &&
+                styles.buttonDisabled,
+            ]}
+            onPress={() => setCleanupModelMenuOpen((current) => !current)}
+          >
+            <View style={styles.settingChoiceText}>
+              <Text style={styles.settingChoiceTitle}>
+                {voiceInputSettings.cleanupEnabled
+                  ? selectedCleanupModel?.name ??
+                    tx("pages.settings.noCleanupModelTitle")
+                  : tx("pages.settings.notApplicable")}
+              </Text>
+              <Text style={styles.settingChoiceDescription}>
+                {voiceInputSettings.cleanupEnabled
+                  ? selectedCleanupModel
+                    ? `${selectedCleanupModel.providerName} · ${getModelDescription(
+                        selectedCleanupModel,
+                      )}`
+                    : tx("pages.settings.noCleanupModelDescription")
+                  : tx("pages.settings.cleanupOffDescription")}
+              </Text>
+            </View>
+            <ChevronRight
+              color={colors.muted}
+              size={18}
+              strokeWidth={2.35}
+              style={[
+                styles.modelSelectChevron,
+                cleanupModelMenuOpen && styles.modelSelectChevronOpen,
+              ]}
+            />
+          </Pressable>
+
+          {cleanupModelMenuOpen &&
+          voiceInputSettings.cleanupEnabled &&
+          availableModels.length > 0 ? (
+            <View style={styles.modelOptionList}>
+              {availableModels.map((model) => (
+                <SettingChoice
+                  key={model.id}
+                  description={`${model.providerName} · ${getModelDescription(model)}`}
+                  selected={model.id === selectedCleanupModel?.id}
+                  title={model.name}
+                  onPress={() => {
+                    onChangeVoiceInputSettings({ cleanupModelId: model.id });
+                    setCleanupModelMenuOpen(false);
+                  }}
+                />
+              ))}
+            </View>
+          ) : null}
+        </View>
+
+        <Text style={styles.sectionTitle}>
           {tx("pages.settings.serviceKeysTitle")}
         </Text>
         <View style={styles.settingsList}>
           {modelProviders.map((provider) => {
-            const configured = providerKeys[provider.id].trim().length > 0;
+            const providerKey = providerKeys[provider.id] ?? "";
+            const configured = providerKey.trim().length > 0;
 
             return (
               <View key={provider.id} style={styles.providerCard}>
-                <View style={styles.providerHeader}>
-                  <View style={styles.settingChoiceText}>
+                <View style={styles.providerHeaderBlock}>
+                  <View style={styles.providerTitleRow}>
                     <Text style={styles.settingChoiceTitle}>{provider.name}</Text>
-                    <Text style={styles.settingChoiceDescription}>
-                      {tx(provider.descriptionKey)}
+                    <Text
+                      style={[
+                        styles.providerStatus,
+                        configured && styles.providerStatusActive,
+                      ]}
+                    >
+                      {configured
+                        ? tx("pages.settings.added")
+                        : tx("pages.settings.notAdded")}
                     </Text>
                   </View>
-                  <Text
-                    style={[
-                      styles.providerStatus,
-                      configured && styles.providerStatusActive,
-                    ]}
-                  >
-                    {configured
-                      ? tx("pages.settings.added")
-                      : tx("pages.settings.notAdded")}
+                  <Text style={styles.settingChoiceDescription}>
+                    {tx(provider.descriptionKey)}
                   </Text>
                 </View>
                 <Text style={styles.inputLabel}>{provider.keyLabel}</Text>
@@ -3362,7 +3883,7 @@ function ModelSettings({
                   }}
                   secureTextEntry
                   style={styles.settingsInput}
-                  value={providerKeys[provider.id]}
+                  value={providerKey}
                   onChangeText={(value) =>
                     onChangeProviderKey(provider.id, value)
                   }
@@ -3370,6 +3891,21 @@ function ModelSettings({
                     handleInputFocus(providerInputRefs.current[provider.id] ?? null)
                   }
                 />
+                <View style={styles.capabilityRow}>
+                  {provider.capabilities.map((capability) => (
+                    <CapabilityToggle
+                      key={capability}
+                      label={getProviderCapabilityLabel(capability)}
+                      selected={getProviderEnabledCapabilities(
+                        providerCapabilities,
+                        provider.id,
+                      ).includes(capability)}
+                      onPress={() =>
+                        onToggleProviderCapability(provider.id, capability)
+                      }
+                    />
+                  ))}
+                </View>
               </View>
             );
           })}
@@ -3688,6 +4224,111 @@ function SettingChoice({
         <Text style={styles.settingChoiceDescription}>{description}</Text>
       </View>
       <SelectionMark selected={selected} />
+    </Pressable>
+  );
+}
+
+function CapabilityToggle({
+  label,
+  selected,
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      style={[styles.capabilityToggle, selected && styles.capabilityToggleActive]}
+      onPress={onPress}
+    >
+      <View
+        style={[
+          styles.capabilityCheck,
+          selected && styles.capabilityCheckActive,
+        ]}
+      >
+        {selected ? (
+          <Check color={colors.primaryText} size={11} strokeWidth={3} />
+        ) : null}
+      </View>
+      <Text
+        style={[
+          styles.capabilityToggleText,
+          selected && styles.capabilityToggleTextActive,
+        ]}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function MiniSwitch({
+  disabled,
+  selected,
+  onPress,
+}: {
+  disabled?: boolean;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  const progress = useRef(new Animated.Value(selected ? 1 : 0)).current;
+
+  useEffect(() => {
+    Animated.timing(progress, {
+      duration: 160,
+      easing: Easing.out(Easing.cubic),
+      toValue: selected ? 1 : 0,
+      useNativeDriver: false,
+    }).start();
+  }, [progress, selected]);
+
+  const trackColor = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [colors.border, colors.primary],
+  });
+  const thumbTranslateX = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 18],
+  });
+
+  return (
+    <Pressable
+      accessibilityRole="switch"
+      accessibilityState={{ checked: selected, disabled }}
+      disabled={disabled}
+      style={[styles.miniSwitch, disabled && styles.buttonDisabled]}
+      onPress={onPress}
+    >
+      <Animated.View
+        style={[
+          styles.miniSwitchTrack,
+          {
+            backgroundColor: trackColor,
+            borderColor: trackColor,
+          },
+        ]}
+      >
+        <Text
+          style={[
+            styles.miniSwitchStateText,
+            selected
+              ? styles.miniSwitchStateTextOff
+              : styles.miniSwitchStateTextOn,
+          ]}
+        >
+          {selected ? "ON" : "OFF"}
+        </Text>
+        <Animated.View
+          style={[
+            styles.miniSwitchThumb,
+            {
+              transform: [{ translateX: thumbTranslateX }],
+            },
+          ]}
+        />
+      </Animated.View>
     </Pressable>
   );
 }
@@ -6924,6 +7565,14 @@ function getModelDescription(model: ModelOption) {
   return tx(model.descriptionKey);
 }
 
+function getSttModelDescription(model: SttModelOption) {
+  return tx(model.descriptionKey);
+}
+
+function getProviderCapabilityLabel(capability: ProviderCapability) {
+  return tx(`settings.models.capabilities.${capability}`);
+}
+
 type WorkspaceDatabase = Awaited<ReturnType<typeof SQLite.openDatabaseAsync>>;
 
 type FragmentRow = {
@@ -7893,18 +8542,115 @@ function isBackupSettingsPayload(
     isThemeId(payload.themeId) ||
     isLanguageId(payload.languageId) ||
     isProviderKeys(payload.providerKeys) ||
+    Boolean(normalizeProviderCapabilities(payload.providerCapabilities)) ||
+    Boolean(normalizeVoiceInputSettings(payload.voiceInputSettings)) ||
     typeof payload.activeModelId === "string" ||
     payload.activeModelId === null
   );
 }
 
 function isProviderKeys(value: unknown): value is ProviderKeys {
-  if (!value || typeof value !== "object") return false;
+  return normalizeProviderKeys(value) !== null;
+}
+
+function normalizeProviderKeys(value: unknown): ProviderKeys | null {
+  if (!value || typeof value !== "object") return null;
 
   const payload = value as Partial<Record<ProviderId, unknown>>;
+  const keys = { ...emptyProviderKeys };
 
-  return modelProviders.every(
-    (provider) => typeof payload[provider.id] === "string",
+  for (const provider of modelProviders) {
+    const value = payload[provider.id];
+
+    if (value === undefined) continue;
+    if (typeof value !== "string") return null;
+
+    keys[provider.id] = value;
+  }
+
+  return keys;
+}
+
+function isProviderCapability(value: unknown): value is ProviderCapability {
+  return value === "text" || value === "stt";
+}
+
+function normalizeProviderCapabilities(
+  value: unknown,
+): ProviderCapabilities | null {
+  if (!value || typeof value !== "object") return null;
+
+  const payload = value as Partial<Record<ProviderId, unknown>>;
+  const next = { ...defaultProviderCapabilities };
+  let touched = false;
+
+  for (const provider of modelProviders) {
+    const configured = payload[provider.id];
+
+    if (configured === undefined) continue;
+    if (!Array.isArray(configured)) return null;
+
+    const selected = configured.filter(
+      (capability): capability is ProviderCapability =>
+        isProviderCapability(capability) &&
+        provider.capabilities.includes(capability),
+    );
+
+    next[provider.id] = orderProviderCapabilities(
+      provider,
+      selected.length > 0 ? selected : [provider.capabilities[0]],
+    );
+    touched = true;
+  }
+
+  return touched ? next : null;
+}
+
+function normalizeVoiceInputSettings(value: unknown): VoiceInputSettings | null {
+  if (!value || typeof value !== "object") return null;
+
+  const payload = value as Partial<Record<keyof VoiceInputSettings, unknown>>;
+  const mode = payload.mode === "cloud" ? "cloud" : "native";
+  const cleanupEnabled =
+    typeof payload.cleanupEnabled === "boolean"
+      ? payload.cleanupEnabled
+      : defaultVoiceInputSettings.cleanupEnabled;
+
+  return {
+    cleanupEnabled,
+    cleanupModelId:
+      typeof payload.cleanupModelId === "string"
+        ? payload.cleanupModelId
+        : null,
+    mode,
+    sttModelId:
+      typeof payload.sttModelId === "string" ? payload.sttModelId : null,
+  };
+}
+
+function getProviderEnabledCapabilities(
+  providerCapabilities: ProviderCapabilities,
+  providerId: ProviderId,
+) {
+  const provider = modelProviders.find((item) => item.id === providerId);
+
+  if (!provider) return defaultProviderCapabilities[providerId];
+
+  const selected = (
+    providerCapabilities[providerId] ?? defaultProviderCapabilities[providerId]
+  ).filter((capability) => provider.capabilities.includes(capability));
+
+  return selected.length > 0
+    ? orderProviderCapabilities(provider, selected)
+    : defaultProviderCapabilities[providerId];
+}
+
+function orderProviderCapabilities(
+  provider: ModelProvider,
+  capabilities: ProviderCapability[],
+) {
+  return provider.capabilities.filter((capability) =>
+    capabilities.includes(capability),
   );
 }
 
@@ -7934,11 +8680,44 @@ function downloadWebBlob(blob: Blob, fileName: string) {
   urlApi.revokeObjectURL(url);
 }
 
-function getAvailableModels(providerKeys: ProviderKeys): AvailableModelOption[] {
+function getAvailableModels(
+  providerKeys: ProviderKeys,
+  providerCapabilities: ProviderCapabilities,
+): AvailableModelOption[] {
   return modelProviders.flatMap((provider) => {
-    if (providerKeys[provider.id].trim().length === 0) return [];
+    if ((providerKeys[provider.id] ?? "").trim().length === 0) return [];
+    if (
+      !getProviderEnabledCapabilities(
+        providerCapabilities,
+        provider.id,
+      ).includes("text")
+    ) {
+      return [];
+    }
 
     return provider.models.map((model) => ({
+      ...model,
+      providerName: provider.name,
+    }));
+  });
+}
+
+function getAvailableSttModels(
+  providerKeys: ProviderKeys,
+  providerCapabilities: ProviderCapabilities,
+): AvailableSttModelOption[] {
+  return modelProviders.flatMap((provider) => {
+    if ((providerKeys[provider.id] ?? "").trim().length === 0) return [];
+    if (
+      !getProviderEnabledCapabilities(
+        providerCapabilities,
+        provider.id,
+      ).includes("stt")
+    ) {
+      return [];
+    }
+
+    return (provider.sttModels ?? []).map((model) => ({
       ...model,
       providerName: provider.name,
     }));
@@ -7953,7 +8732,7 @@ function resolveGenerationService(
     return null;
   }
 
-  const apiKey = providerKeys[activeModel.providerId].trim();
+  const apiKey = (providerKeys[activeModel.providerId] ?? "").trim();
 
   if (!apiKey) {
     return null;
@@ -8005,7 +8784,7 @@ async function buildDraftRequestFingerprint({
   model: string;
   options: typeof draftGenerationOptions;
   payload: DraftGenerationPayload;
-  provider: ProviderId;
+  provider: TextProviderId;
 }) {
   return requestFingerprint({
     generation: {
@@ -8032,7 +8811,7 @@ async function buildTitleRequestFingerprint({
   model: string;
   options: typeof titleGenerationOptions;
   payload: { fragment: { content: string; id: string } };
-  provider: ProviderId;
+  provider: TextProviderId;
 }) {
   return requestFingerprint({
     id,
@@ -8619,6 +9398,15 @@ function createThemedStyles(colors: ThemeColors) {
     flexDirection: "row",
     gap: 12,
   },
+  providerHeaderBlock: {
+    gap: 3,
+  },
+  providerTitleRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "space-between",
+  },
   providerStatus: {
     backgroundColor: colors.secondary,
     borderRadius: 999,
@@ -8632,6 +9420,49 @@ function createThemedStyles(colors: ThemeColors) {
   providerStatusActive: {
     backgroundColor: colors.primary,
     color: colors.primaryText,
+  },
+  capabilityRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  capabilityToggle: {
+    alignItems: "center",
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 7,
+    minHeight: 32,
+    paddingHorizontal: 10,
+  },
+  capabilityToggleActive: {
+    backgroundColor: colors.secondary,
+    borderColor: colors.primary,
+  },
+  capabilityCheck: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    height: 18,
+    justifyContent: "center",
+    width: 18,
+  },
+  capabilityCheckActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  capabilityToggleText: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 18,
+  },
+  capabilityToggleTextActive: {
+    color: colors.text,
   },
   settingsInput: {
     backgroundColor: colors.background,
@@ -8661,6 +9492,82 @@ function createThemedStyles(colors: ThemeColors) {
   },
   modelOptionList: {
     gap: 10,
+  },
+  segmentedRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  segmentButton: {
+    alignItems: "center",
+    backgroundColor: colors.background,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 1,
+    flex: 1,
+    justifyContent: "center",
+    minHeight: 38,
+    paddingHorizontal: 12,
+  },
+  segmentButtonActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  segmentButtonText: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  segmentButtonTextActive: {
+    color: colors.primaryText,
+  },
+  settingsSwitchBlock: {
+    gap: 3,
+  },
+  settingsSwitchTitleRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "space-between",
+  },
+  settingsSwitchTitle: {
+    flex: 1,
+    minWidth: 0,
+  },
+  miniSwitch: {
+    height: 20,
+    width: 44,
+  },
+  miniSwitchTrack: {
+    borderRadius: 999,
+    borderWidth: 1,
+    height: 20,
+    justifyContent: "center",
+    overflow: "hidden",
+    paddingHorizontal: 2,
+    position: "relative",
+    width: 40,
+  },
+  miniSwitchThumb: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderRadius: 999,
+    height: 16,
+    justifyContent: "center",
+    width: 16,
+  },
+  miniSwitchStateText: {
+    color: colors.primaryText,
+    fontSize: 6,
+    fontWeight: "900",
+    lineHeight: 8,
+    position: "absolute",
+    top: 5,
+  },
+  miniSwitchStateTextOn: {
+    right: 5,
+  },
+  miniSwitchStateTextOff: {
+    left: 5,
   },
   fragmentCardShadow: {
     borderRadius: 14,
