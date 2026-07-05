@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "EssAI",
-    "slug": "essai-mobile",
+    "slug": "essai",
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -26,6 +26,12 @@
     "web": {
       "bundler": "metro",
       "favicon": "./assets/web/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "9071c74e-32b5-4671-b374-dd49f2ce993f"
+      }
+    },
+    "owner": "cnj-devs"
   }
 }
