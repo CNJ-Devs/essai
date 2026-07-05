@@ -6105,20 +6105,27 @@ function DraftDetail({
                 styles.draftContentCarousel,
                 { height: carouselFrame.height, width: carouselFrame.width },
               ]}
-              renderItem={({ item }) => (
-                <View
-                  style={[
-                    styles.draftCarouselItem,
-                    { height: carouselFrame.height, width: carouselFrame.width },
-                  ]}
-                >
+              renderItem={({ item }) => {
+                const versionContentReady =
+                  item.status === "completed" && Boolean(item.content.trim());
+
+                return (
                   <View
                     style={[
-                      styles.draftContentCard,
-                      styles.draftContentCardFill,
-                      { width: carouselCardWidth },
+                      styles.draftCarouselItem,
+                      {
+                        height: carouselFrame.height,
+                        width: carouselFrame.width,
+                      },
                     ]}
                   >
+                    <View
+                      style={[
+                        styles.draftContentCard,
+                        styles.draftContentCardFill,
+                        { width: carouselCardWidth },
+                      ]}
+                    >
                     <View style={styles.draftVersionTopRow}>
                       <View style={styles.draftVersionMeta}>
                         <Text style={styles.softBadge}>
@@ -6138,11 +6145,17 @@ function DraftDetail({
                         </Pressable>
                         <Pressable
                           accessibilityLabel={tx("pages.drafts.editA11y")}
-                          style={styles.draftVersionActionButton}
+                          disabled={!versionContentReady}
+                          style={[
+                            styles.draftVersionActionButton,
+                            !versionContentReady && styles.buttonDisabled,
+                          ]}
                           onPress={() => openVersionEditor(item)}
                         >
                           <PencilLine
-                            color={colors.text}
+                            color={
+                              versionContentReady ? colors.text : colors.muted
+                            }
                             size={14}
                             strokeWidth={2.35}
                           />
@@ -6182,35 +6195,45 @@ function DraftDetail({
                     </ScrollView>
                     <Pressable
                       accessibilityLabel={tx("pages.drafts.collectFragmentA11y")}
-                      disabled={item.status !== "completed" || !item.content.trim()}
+                      disabled={!versionContentReady}
                       style={[
                         styles.draftRewriteButton,
                         styles.draftCollectFragmentButton,
-                        (item.status !== "completed" || !item.content.trim()) &&
-                          styles.buttonDisabled,
+                        !versionContentReady && styles.buttonDisabled,
                       ]}
                       onPress={() => onCollectVersion(item.content)}
                     >
                       <FileText
-                        color={colors.primary}
+                        color={
+                          versionContentReady ? colors.primary : colors.muted
+                        }
                         size={17}
                         strokeWidth={2.35}
                       />
                     </Pressable>
                     <Pressable
                       accessibilityLabel={tx("pages.drafts.rewriteA11y")}
-                      style={styles.draftRewriteButton}
+                      disabled={!versionContentReady}
+                      style={[
+                        styles.draftRewriteButton,
+                        !versionContentReady && styles.buttonDisabled,
+                      ]}
                       onPress={() => openRewrite(item)}
                     >
                       <WandSparkles
-                        color={colors.primaryText}
+                        color={
+                          versionContentReady
+                            ? colors.primaryText
+                            : colors.muted
+                        }
                         size={18}
                         strokeWidth={2.35}
                       />
                     </Pressable>
                   </View>
                 </View>
-              )}
+                );
+              }}
             />
           ) : null}
         </View>
