@@ -2966,7 +2966,7 @@ function DetailScrollView({
 function useCappedDetailContentHeight() {
   const { height: windowHeight } = useWindowDimensions();
 
-  return Math.round(Math.max(220, windowHeight * 0.6));
+  return Math.round(Math.max(180, windowHeight * 0.45));
 }
 
 function useFormTextAreaHeight(scale: number, min: number, max: number) {
