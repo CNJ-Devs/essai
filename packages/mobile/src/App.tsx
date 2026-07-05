@@ -1023,9 +1023,7 @@ const generationProviderDefaults: Record<ProviderId, string> = {
   deepseek: "deepseek-v4-pro",
   openai: "gpt-5.4-mini",
 };
-const draftGenerationOptions = {
-  maxOutputTokens: 1800,
-};
+const draftGenerationOptions = undefined;
 const titleGenerationOptions = {
   maxOutputTokens: 96,
 };
