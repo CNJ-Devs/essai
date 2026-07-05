@@ -3901,6 +3901,12 @@ function ComposeSheet({
               : 0),
         )
       : contentFrameHeight;
+  const composeKeyboardSafeAreaCompensation =
+    0;
+  const composeScrollBottomPadding =
+    scrollBottomPadding +
+    composeKeyboardSafeAreaCompensation +
+    (Platform.OS === "android" ? keyboardHeight : 0);
   const canSubmit = content.trim().length > 0;
 
   useEffect(() => {
@@ -3984,9 +3990,10 @@ function ComposeSheet({
                 styles.composeScrollContent,
                 {
                   minHeight: composeScrollMinHeight,
-                  paddingBottom: scrollBottomPadding,
+                  paddingBottom: composeScrollBottomPadding,
                 },
               ]}
+              keyboardDismissMode="none"
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
@@ -4175,13 +4182,30 @@ function SchemeEditor({
   const [quickLawContent, setQuickLawContent] = useState("");
   const [quickLawTags, setQuickLawTags] = useState<string[]>([]);
   const [quickLawError, setQuickLawError] = useState<string | null>(null);
+  const schemeNameInputRef = useRef<TextInput | null>(null);
+  const schemeContentInputRef = useRef<TextInput | null>(null);
+  const quickLawNameInputRef = useRef<TextInput | null>(null);
+  const quickLawContentInputRef = useRef<TextInput | null>(null);
   const insets = useSafeAreaInsets();
   const descriptionInputHeight = useFormTextAreaHeight(0.18, 128, 220);
   const quickLawInputHeight = useFormTextAreaHeight(0.14, 104, 168);
   const {
     floatingButtonBottom,
+    keyboardHeight: floatingKeyboardHeight,
     scrollBottomPadding,
   } = useFloatingActionLayout();
+  const {
+    handleInputFocus,
+    handleScroll,
+    keyboardHeight,
+    scrollRef,
+  } = useAndroidCoveredInputScrollGuard();
+  const schemeKeyboardSafeAreaCompensation =
+    floatingKeyboardHeight > 0 ? insets.bottom : 0;
+  const schemeEditorBottomPadding =
+    scrollBottomPadding +
+    schemeKeyboardSafeAreaCompensation +
+    (Platform.OS === "android" ? keyboardHeight : 0);
   const canSubmit = description.trim().length > 0;
   const canCreateLaw =
     quickLawName.trim().length > 0 && quickLawContent.trim().length > 0;
@@ -4264,19 +4288,24 @@ function SchemeEditor({
           />
           <View style={styles.modalContentFrame}>
           <ScrollView
+            ref={scrollRef}
             automaticallyAdjustKeyboardInsets
             style={styles.modalScroll}
             contentContainerStyle={[
               styles.formStack,
-              { paddingBottom: scrollBottomPadding },
+              { paddingBottom: schemeEditorBottomPadding },
             ]}
             keyboardShouldPersistTaps="handled"
+            onScroll={handleScroll}
+            scrollEventThrottle={16}
             showsVerticalScrollIndicator={false}
           >
             <Text style={styles.inputLabel}>{tx("schemeEditor.nameLabel")}</Text>
             <TextInput
+              ref={schemeNameInputRef}
               value={name}
               onChangeText={setName}
+              onFocus={() => handleInputFocus(schemeNameInputRef.current)}
               placeholder={tx("schemeEditor.namePlaceholder")}
               placeholderTextColor={colors.muted}
               style={styles.singleInput}
@@ -4285,8 +4314,10 @@ function SchemeEditor({
               {tx("schemeEditor.descriptionLabel")}
             </Text>
             <TextInput
+              ref={schemeContentInputRef}
               value={description}
               onChangeText={setDescription}
+              onFocus={() => handleInputFocus(schemeContentInputRef.current)}
               multiline
               scrollEnabled
               textAlignVertical="top"
@@ -4384,8 +4415,10 @@ function SchemeEditor({
                     {tx("lawEditor.nameLabel")}
                   </Text>
                   <TextInput
+                    ref={quickLawNameInputRef}
                     value={quickLawName}
                     onChangeText={setQuickLawName}
+                    onFocus={() => handleInputFocus(quickLawNameInputRef.current)}
                     placeholder={tx("lawEditor.namePlaceholder")}
                     placeholderTextColor={colors.muted}
                     style={styles.singleInput}
@@ -4395,8 +4428,10 @@ function SchemeEditor({
 
               <Text style={styles.inputLabel}>{tx("lawEditor.contentLabel")}</Text>
               <TextInput
+                ref={quickLawContentInputRef}
                 value={quickLawContent}
                 onChangeText={setQuickLawContent}
+                onFocus={() => handleInputFocus(quickLawContentInputRef.current)}
                 multiline
                 scrollEnabled
                 textAlignVertical="top"
@@ -4452,12 +4487,27 @@ function LawEditor({
   const [name, setName] = useState(initialLaw?.title ?? "");
   const [content, setContent] = useState(initialLaw?.content ?? "");
   const [tags, setTags] = useState<string[]>(initialLaw?.tags ?? []);
+  const lawNameInputRef = useRef<TextInput | null>(null);
+  const lawContentInputRef = useRef<TextInput | null>(null);
   const insets = useSafeAreaInsets();
   const contentInputHeight = useFormTextAreaHeight(0.24, 150, 280);
   const {
     floatingButtonBottom,
+    keyboardHeight: floatingKeyboardHeight,
     scrollBottomPadding,
   } = useFloatingActionLayout();
+  const {
+    handleInputFocus,
+    handleScroll,
+    keyboardHeight,
+    scrollRef,
+  } = useAndroidCoveredInputScrollGuard();
+  const lawKeyboardSafeAreaCompensation =
+    floatingKeyboardHeight > 0 ? insets.bottom : 0;
+  const lawEditorBottomPadding =
+    scrollBottomPadding +
+    lawKeyboardSafeAreaCompensation +
+    (Platform.OS === "android" ? keyboardHeight : 0);
   const canSubmit = name.trim().length > 0 && content.trim().length > 0;
 
   useEffect(() => {
@@ -4494,27 +4544,34 @@ function LawEditor({
           />
           <View style={styles.modalContentFrame}>
           <ScrollView
+            ref={scrollRef}
             automaticallyAdjustKeyboardInsets
             style={styles.modalScroll}
             contentContainerStyle={[
               styles.formStack,
-              { paddingBottom: scrollBottomPadding },
+              { paddingBottom: lawEditorBottomPadding },
             ]}
             keyboardShouldPersistTaps="handled"
+            onScroll={handleScroll}
+            scrollEventThrottle={16}
             showsVerticalScrollIndicator={false}
           >
             <Text style={styles.inputLabel}>{tx("lawEditor.nameLabel")}</Text>
             <TextInput
+              ref={lawNameInputRef}
               value={name}
               onChangeText={setName}
+              onFocus={() => handleInputFocus(lawNameInputRef.current)}
               placeholder={tx("lawEditor.namePlaceholder")}
               placeholderTextColor={colors.muted}
               style={styles.singleInput}
             />
             <Text style={styles.inputLabel}>{tx("lawEditor.contentLabel")}</Text>
             <TextInput
+              ref={lawContentInputRef}
               value={content}
               onChangeText={setContent}
+              onFocus={() => handleInputFocus(lawContentInputRef.current)}
               multiline
               scrollEnabled
               textAlignVertical="top"
@@ -5552,6 +5609,7 @@ function DraftDetail({
               onChangeText={setEditVersionText}
               placeholder={tx("pages.drafts.editPlaceholder")}
               placeholderTextColor={colors.muted}
+              scrollEnabled
               style={styles.versionEditorInput}
               textAlignVertical="top"
               value={editVersionText}
@@ -9560,6 +9618,7 @@ function createThemedStyles(colors: ThemeColors) {
     flex: 1,
     fontSize: 15,
     lineHeight: 24,
+    minHeight: 132,
     padding: 14,
   },
   lawDetailCard: {

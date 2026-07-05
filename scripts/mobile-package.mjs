@@ -15,6 +15,7 @@ Usage:
 Options:
   --env-file <path>          Env file to load. Defaults to packages/mobile/.env.production.
   --android-variant <name>   Android Gradle variant: release or debug. Defaults to release.
+  --android-clean-build      Clean Android app build outputs before packaging.
   --ios-device <value>       iOS device selector. Defaults to the first connected device.
                              Use generic for a build-only simulator app.
   --clean                    Run clean Expo prebuild before packaging.
@@ -99,7 +100,9 @@ async function packageAndroid(options) {
   const task =
     variant === "debug" ? ":app:assembleDebug" : ":app:assembleRelease";
 
-  await run("./gradlew", [task, "--no-daemon"], { cwd: androidDir });
+  const tasks = options.androidCleanBuild ? [":app:clean", task] : [task];
+
+  await run("./gradlew", [...tasks, "--no-daemon"], { cwd: androidDir });
 
   const output =
     variant === "debug"
@@ -169,6 +172,7 @@ function detectFirstIosDevice() {
 
 function parseOptions(args) {
   const options = {
+    androidCleanBuild: false,
     androidVariant: "release",
     clean: false,
     envFile: null,
@@ -180,6 +184,8 @@ function parseOptions(args) {
 
     if (arg === "--env-file") {
       options.envFile = readOptionValue(args, ++index, arg);
+    } else if (arg === "--android-clean-build") {
+      options.androidCleanBuild = true;
     } else if (arg === "--android-variant") {
       const variant = readOptionValue(args, ++index, arg);
 
