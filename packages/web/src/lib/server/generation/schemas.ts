@@ -86,6 +86,7 @@ export const schemeDraftPayloadSchema = z.object({
 export type SchemeDraftPayload = z.infer<typeof schemeDraftPayloadSchema>;
 
 export const rewriteDraftPayloadSchema = z.object({
+  basis: schemeDraftPayloadSchema.optional(),
   instruction: z.string().trim().min(1),
   sourceContent: z.string().trim().min(1),
   sourceVersionId: z.string().trim().min(1),

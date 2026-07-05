@@ -5,7 +5,12 @@ import {
 } from "@/lib/ai/prompt";
 import { copy } from "@/lib/i18n";
 import type { Fragment, SchemeSnapshot } from "@/lib/types";
-import type { DraftPayload, RewriteDraftPayload, TitlePayload } from "./schemas";
+import type {
+  DraftPayload,
+  RewriteDraftPayload,
+  SchemeDraftPayload,
+  TitlePayload,
+} from "./schemas";
 
 const generatedTitleMaxLength = 14;
 
@@ -15,16 +20,40 @@ export function buildDraftGenerationPrompt(payload: DraftPayload) {
   }
 
   const now = new Date().toISOString();
-  const fragment: Fragment = {
-    id: payload.fragment.id || "client-fragment",
+  const fragment = buildFragmentFromPayload(payload.fragment, now);
+  const snapshot = buildSchemeSnapshotFromPayload(payload, now);
+  const prompt = buildDraftPrompt(fragment, snapshot);
+
+  return {
+    instructions: copy.ai.draftInstructions,
+    prompt,
+    promptTemplateVersion: PROMPT_TEMPLATE_VERSION,
+    promptChars: prompt.length,
+  };
+}
+
+function buildFragmentFromPayload(
+  fragment: SchemeDraftPayload["fragment"],
+  now: string,
+): Fragment {
+  const title = fragment.title || "New Piece";
+
+  return {
+    id: fragment.id || "client-fragment",
     userId: "local-user",
-    title: payload.fragment.title || "New Piece",
-    titleSource: payload.fragment.title ? "user" : "ai",
-    content: payload.fragment.content,
+    title,
+    titleSource: fragment.title ? "user" : "ai",
+    content: fragment.content,
     createdAt: now,
     updatedAt: now,
   };
-  const snapshot: SchemeSnapshot = {
+}
+
+function buildSchemeSnapshotFromPayload(
+  payload: Pick<SchemeDraftPayload, "laws" | "scheme">,
+  now: string,
+): SchemeSnapshot {
+  return {
     schemeId: payload.scheme.id || "client-scheme",
     schemeName: payload.scheme.title,
     schemeDescription: payload.scheme.content,
@@ -37,18 +66,15 @@ export function buildDraftGenerationPrompt(payload: DraftPayload) {
       .filter((law) => law.prompt),
     snapshottedAt: now,
   };
-  const prompt = buildDraftPrompt(fragment, snapshot);
-
-  return {
-    instructions: copy.ai.draftInstructions,
-    prompt,
-    promptTemplateVersion: PROMPT_TEMPLATE_VERSION,
-    promptChars: prompt.length,
-  };
 }
 
-function buildRewriteGenerationPrompt(payload: RewriteDraftPayload) {
-  const now = new Date().toISOString();
+function buildFallbackRewriteBasis(
+  payload: RewriteDraftPayload,
+  now: string,
+): {
+  fragment: Fragment;
+  snapshot: SchemeSnapshot;
+} {
   const fragment: Fragment = {
     id: `rewrite-source-${payload.sourceVersionId}`,
     userId: "local-user",
@@ -66,11 +92,23 @@ function buildRewriteGenerationPrompt(payload: RewriteDraftPayload) {
     laws: [],
     snapshottedAt: now,
   };
+
+  return { fragment, snapshot };
+}
+
+function buildRewriteGenerationPrompt(payload: RewriteDraftPayload) {
+  const now = new Date().toISOString();
+  const basis = payload.basis
+    ? {
+        fragment: buildFragmentFromPayload(payload.basis.fragment, now),
+        snapshot: buildSchemeSnapshotFromPayload(payload.basis, now),
+      }
+    : buildFallbackRewriteBasis(payload, now);
   const prompt = buildDraftRevisionPrompt({
     currentDraft: payload.sourceContent,
-    fragment,
+    fragment: basis.fragment,
     instruction: payload.instruction,
-    snapshot,
+    snapshot: basis.snapshot,
   });
 
   return {

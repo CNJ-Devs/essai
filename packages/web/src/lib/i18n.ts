@@ -318,7 +318,7 @@ ${fragmentContent}
       fragmentContent,
       currentDraft,
       instruction,
-    }: DraftRevisionPromptCopy) => `你是 EssAI 的成稿改写引擎。你的任务是根据用户的修改意见，基于当前稿件生成一版新的完整稿件。
+    }: DraftRevisionPromptCopy) => `你是 EssAI 的成稿改写引擎。你的任务是根据原始生成依据、当前稿件和用户修改意见，重新输出一版完整稿件。
 
 请严格区分以下内容：
 
@@ -725,7 +725,7 @@ Generate the draft from the content above. The final format should be decided by
       fragmentContent,
       currentDraft,
       instruction,
-    }) => `You are EssAI's draft rewriting engine. Your task is to create a new complete draft from the current draft and the user's revision note.
+    }) => `You are EssAI's draft rewriting engine. Your task is to create a new complete draft from the original generation basis, the current draft, and the user's revision note.
 
 Keep the following content clearly separated:
 
