@@ -115,6 +115,8 @@ export async function POST(request: Request) {
     });
   }
 
+  const dispatchTokenExpiry = checkDispatchTokenExpiry();
+
   try {
     await dispatchAndroidBuild({
       appBuildVersion: payload.metadata?.appBuildVersion ?? null,
@@ -140,6 +142,7 @@ export async function POST(request: Request) {
   return Response.json({
     ok: true,
     dispatched: true,
+    dispatchTokenExpiry,
     eventType: githubEventType,
     releaseTag,
     durationMs: Date.now() - startedAt,
@@ -211,6 +214,82 @@ async function dispatchAndroidBuild(payload: {
       `Failed to dispatch GitHub workflow: ${response.status} ${body}`,
     );
   }
+}
+
+function checkDispatchTokenExpiry() {
+  const expiresAtValue = process.env.GITHUB_DISPATCH_TOKEN_EXPIRES_AT;
+
+  if (!expiresAtValue) {
+    console.warn(
+      "GITHUB_DISPATCH_TOKEN_EXPIRES_AT is not configured. Set it to the dispatch token expiration date, for example 2027-07-05.",
+    );
+
+    return {
+      daysLeft: null,
+      expiresAt: null,
+      level: "missing_configuration",
+    };
+  }
+
+  const expiresAt = parseExpirationDate(expiresAtValue);
+
+  if (Number.isNaN(expiresAt.getTime())) {
+    console.warn(
+      `GITHUB_DISPATCH_TOKEN_EXPIRES_AT is invalid: ${expiresAtValue}`,
+    );
+
+    return {
+      daysLeft: null,
+      expiresAt: expiresAtValue,
+      level: "invalid_configuration",
+    };
+  }
+
+  const daysLeft = Math.ceil((expiresAt.getTime() - Date.now()) / 86_400_000);
+  const notice =
+    daysLeft <= 0
+      ? {
+          daysLeft,
+          expiresAt: expiresAtValue,
+          level: "expired",
+        }
+      : daysLeft <= 7
+        ? {
+            daysLeft,
+            expiresAt: expiresAtValue,
+            level: "critical",
+          }
+        : daysLeft <= 30
+          ? {
+              daysLeft,
+              expiresAt: expiresAtValue,
+              level: "warning",
+            }
+          : {
+              daysLeft,
+              expiresAt: expiresAtValue,
+              level: "ok",
+            };
+
+  if (notice.level !== "ok") {
+    console.warn(
+      `GITHUB_DISPATCH_TOKEN expiry status: ${notice.level}; ${daysLeft} day(s) left.`,
+    );
+
+    // TODO: Send this warning to Feishu or another external notification channel.
+    // This route is invoked by EAS webhooks, so it only checks expiry when builds finish.
+    // Use Vercel Cron later if this needs to run without a build event.
+  }
+
+  return notice;
+}
+
+function parseExpirationDate(value: string) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return new Date(`${value}T00:00:00.000Z`);
+  }
+
+  return new Date(value);
 }
 
 function jsonIgnored({
