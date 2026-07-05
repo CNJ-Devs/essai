@@ -6184,15 +6184,23 @@ function DraftDetail({
                         </Pressable>
                       </View>
                     </View>
-                    <ScrollView
-                      style={styles.draftContentScroll}
-                      contentContainerStyle={styles.draftContentScrollInner}
-                      showsVerticalScrollIndicator={false}
-                    >
-                      <Text style={styles.draftContentText}>
-                        {item.content || tx("pages.drafts.pendingPreview")}
-                      </Text>
-                    </ScrollView>
+                    {versionContentReady ? (
+                      <ScrollView
+                        style={styles.draftContentScroll}
+                        contentContainerStyle={styles.draftContentScrollInner}
+                        showsVerticalScrollIndicator={false}
+                      >
+                        <Text style={styles.draftContentText}>
+                          {item.content}
+                        </Text>
+                      </ScrollView>
+                    ) : (
+                      <View style={styles.draftStatusPreview}>
+                        <Text style={styles.draftStatusPreviewText}>
+                          {draftStatusText(item.status)}
+                        </Text>
+                      </View>
+                    )}
                     <Pressable
                       accessibilityLabel={tx("pages.drafts.collectFragmentA11y")}
                       disabled={!versionContentReady}
@@ -10644,6 +10652,21 @@ function createThemedStyles(colors: ThemeColors) {
     color: colors.text,
     fontSize: 16,
     lineHeight: 30,
+  },
+  draftStatusPreview: {
+    alignItems: "center",
+    flex: 1,
+    justifyContent: "center",
+    minHeight: 0,
+    paddingBottom: 68,
+    paddingHorizontal: 18,
+  },
+  draftStatusPreviewText: {
+    color: colors.muted,
+    fontSize: 14,
+    fontWeight: "600",
+    lineHeight: 22,
+    textAlign: "center",
   },
   draftRewriteButton: {
     alignItems: "center",
