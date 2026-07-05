@@ -1,0 +1,110 @@
+name: Distribute Android Firebase Build
+
+on:
+  repository_dispatch:
+    types:
+      - eas-android-build-finished
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Android tag, for example essai-android-v0.1.0"
+        required: true
+        type: string
+      build_url:
+        description: "EAS artifact URL for the Android APK"
+        required: true
+        type: string
+      eas_build_id:
+        description: "EAS build id"
+        required: false
+        type: string
+      eas_build_url:
+        description: "EAS build details URL"
+        required: false
+        type: string
+
+concurrency:
+  group: distribute-android-firebase-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || github.event.client_payload.releaseTag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  BUILD_URL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.build_url || github.event.client_payload.buildUrl }}
+  EAS_BUILD_ID: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.eas_build_id || github.event.client_payload.buildId }}
+  EAS_BUILD_URL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.eas_build_url || github.event.client_payload.buildDetailsPageUrl }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || github.event.client_payload.releaseTag }}
+
+jobs:
+  distribute:
+    name: Upload Android APK to Firebase App Distribution
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate dispatch payload
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$RELEASE_TAG" =~ ^essai-android-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "RELEASE_TAG must match essai-android-vX.Y.Z; got $RELEASE_TAG"
+            exit 1
+          fi
+
+          if [[ ! "$BUILD_URL" =~ ^https:// ]]; then
+            echo "BUILD_URL must be an HTTPS URL; got $BUILD_URL"
+            exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download Android artifact
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          curl --fail --location --retry 3 --retry-delay 5 \
+            --output "artifacts/$RELEASE_TAG.apk" \
+            "$BUILD_URL"
+
+      - name: Write Firebase service account
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/firebase-service-account.json" <<'JSON'
+          ${{ secrets.FIREBASE_APP_DISTRIBUTION_SERVICE_ACCOUNT_JSON }}
+          JSON
+
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/firebase-release-notes.txt" <<EOF
+          EssAI Android ${RELEASE_TAG#essai-android-v}
+
+          EAS build: ${EAS_BUILD_URL:-$EAS_BUILD_ID}
+          Source tag: $RELEASE_TAG
+          EOF
+
+      - name: Upload to Firebase App Distribution
+        env:
+          FIREBASE_ANDROID_APP_ID: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
+          FIREBASE_TESTER_GROUPS: ${{ secrets.FIREBASE_TESTER_GROUPS }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/firebase-service-account.json
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$FIREBASE_ANDROID_APP_ID" ]]; then
+            echo "FIREBASE_ANDROID_APP_ID is required."
+            exit 1
+          fi
+
+          if [[ -z "$FIREBASE_TESTER_GROUPS" ]]; then
+            echo "FIREBASE_TESTER_GROUPS is required."
+            exit 1
+          fi
+
+          npx -y firebase-tools@latest appdistribution:distribute \
+            "artifacts/$RELEASE_TAG.apk" \
+            --app "$FIREBASE_ANDROID_APP_ID" \
+            --groups "$FIREBASE_TESTER_GROUPS" \
+            --release-notes-file "$RUNNER_TEMP/firebase-release-notes.txt"

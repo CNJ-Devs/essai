@@ -1,5 +1,12 @@
 {
   "build": {
+    "firebase": {
+      "environment": "production",
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
+    },
     "production": {
       "environment": "production",
       "android": {

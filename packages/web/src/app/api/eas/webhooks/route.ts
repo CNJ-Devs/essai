@@ -1,0 +1,253 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
+
+export const runtime = "nodejs";
+export const maxDuration = 30;
+
+const androidReleaseTagPattern = /^essai-android-v\d+\.\d+\.\d+$/;
+const githubEventType = "eas-android-build-finished";
+
+const easBuildWebhookSchema = z
+  .object({
+    id: z.string(),
+    accountName: z.string().optional(),
+    appId: z.string().optional(),
+    artifacts: z
+      .object({
+        buildUrl: z.string().url().optional(),
+      })
+      .passthrough()
+      .optional(),
+    buildDetailsPageUrl: z.string().url().optional(),
+    metadata: z
+      .object({
+        appBuildVersion: z.string().optional(),
+        appIdentifier: z.string().optional(),
+        appName: z.string().optional(),
+        appVersion: z.string().optional(),
+        buildProfile: z.string().optional(),
+        distribution: z.string().optional(),
+        gitCommitHash: z.string().optional(),
+        message: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
+    platform: z.enum(["android", "ios"]),
+    projectName: z.string().optional(),
+    status: z.enum(["finished", "errored", "canceled"]),
+  })
+  .passthrough();
+
+export async function POST(request: Request) {
+  const startedAt = Date.now();
+  const rawBody = await request.text();
+  const secret = process.env.EAS_WEBHOOK_SECRET;
+
+  if (!secret) {
+    return jsonError({
+      code: "missing_webhook_secret",
+      message: "EAS_WEBHOOK_SECRET is not configured.",
+      startedAt,
+      status: 500,
+    });
+  }
+
+  if (
+    !verifyExpoSignature({
+      rawBody,
+      secret,
+      signature: request.headers.get("expo-signature"),
+    })
+  ) {
+    return jsonError({
+      code: "invalid_signature",
+      message: "EAS webhook signature does not match.",
+      startedAt,
+      status: 401,
+    });
+  }
+
+  let body: unknown;
+
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return jsonError({
+      code: "invalid_json",
+      message: "Webhook body must be valid JSON.",
+      startedAt,
+      status: 400,
+    });
+  }
+
+  const parsed = easBuildWebhookSchema.safeParse(body);
+
+  if (!parsed.success) {
+    return jsonError({
+      code: "invalid_payload",
+      message: z.prettifyError(parsed.error),
+      startedAt,
+      status: 400,
+    });
+  }
+
+  const payload = parsed.data;
+  const releaseTag = payload.metadata?.message;
+
+  if (payload.platform !== "android") {
+    return jsonIgnored({ reason: "non_android_platform", startedAt });
+  }
+
+  if (payload.status !== "finished") {
+    return jsonIgnored({ reason: `android_build_${payload.status}`, startedAt });
+  }
+
+  if (!releaseTag || !androidReleaseTagPattern.test(releaseTag)) {
+    return jsonIgnored({ reason: "missing_or_invalid_android_release_tag", startedAt });
+  }
+
+  if (!payload.artifacts?.buildUrl) {
+    return jsonError({
+      code: "missing_artifact_url",
+      message: "Finished Android build did not include artifacts.buildUrl.",
+      startedAt,
+      status: 422,
+    });
+  }
+
+  try {
+    await dispatchAndroidBuild({
+      appBuildVersion: payload.metadata?.appBuildVersion ?? null,
+      appIdentifier: payload.metadata?.appIdentifier ?? null,
+      appVersion: payload.metadata?.appVersion ?? null,
+      buildDetailsPageUrl: payload.buildDetailsPageUrl ?? null,
+      buildId: payload.id,
+      buildProfile: payload.metadata?.buildProfile ?? null,
+      buildUrl: payload.artifacts.buildUrl,
+      distribution: payload.metadata?.distribution ?? null,
+      gitCommitHash: payload.metadata?.gitCommitHash ?? null,
+      releaseTag,
+    });
+  } catch (error) {
+    return jsonError({
+      code: "github_dispatch_failed",
+      message: error instanceof Error ? error.message : "GitHub dispatch failed.",
+      startedAt,
+      status: 500,
+    });
+  }
+
+  return Response.json({
+    ok: true,
+    dispatched: true,
+    eventType: githubEventType,
+    releaseTag,
+    durationMs: Date.now() - startedAt,
+  });
+}
+
+function verifyExpoSignature({
+  rawBody,
+  secret,
+  signature,
+}: {
+  rawBody: string;
+  secret: string;
+  signature: string | null;
+}) {
+  if (!signature) return false;
+
+  const digest = createHmac("sha1", secret).update(rawBody).digest("hex");
+  const expected = `sha1=${digest}`;
+  const signatureBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+
+  if (signatureBuffer.length !== expectedBuffer.length) return false;
+
+  return timingSafeEqual(signatureBuffer, expectedBuffer);
+}
+
+async function dispatchAndroidBuild(payload: {
+  appBuildVersion: string | null;
+  appIdentifier: string | null;
+  appVersion: string | null;
+  buildDetailsPageUrl: string | null;
+  buildId: string;
+  buildProfile: string | null;
+  buildUrl: string;
+  distribution: string | null;
+  gitCommitHash: string | null;
+  releaseTag: string;
+}) {
+  const token = process.env.GITHUB_DISPATCH_TOKEN;
+  const repository = process.env.GITHUB_DISPATCH_REPOSITORY || "CNJ-Devs/essai";
+
+  if (!token) {
+    throw new Error("GITHUB_DISPATCH_TOKEN is not configured.");
+  }
+
+  const response = await fetch(
+    `https://api.github.com/repos/${repository}/dispatches`,
+    {
+      body: JSON.stringify({
+        client_payload: payload,
+        event_type: githubEventType,
+      }),
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "User-Agent": "essai-eas-webhook",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      method: "POST",
+    },
+  );
+
+  if (!response.ok) {
+    const body = await response.text();
+
+    throw new Error(
+      `Failed to dispatch GitHub workflow: ${response.status} ${body}`,
+    );
+  }
+}
+
+function jsonIgnored({
+  reason,
+  startedAt,
+}: {
+  reason: string;
+  startedAt: number;
+}) {
+  return Response.json({
+    ok: true,
+    dispatched: false,
+    reason,
+    durationMs: Date.now() - startedAt,
+  });
+}
+
+function jsonError({
+  code,
+  message,
+  startedAt,
+  status,
+}: {
+  code: string;
+  message: string;
+  startedAt: number;
+  status: number;
+}) {
+  return Response.json(
+    {
+      ok: false,
+      error: {
+        code,
+        message,
+      },
+      durationMs: Date.now() - startedAt,
+    },
+    { status },
+  );
+}
