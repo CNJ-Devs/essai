@@ -7,7 +7,6 @@
     "icon": "./assets/icon.png",
     "scheme": "essai",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "ios": {
       "icon": "./assets/ios/icon.png",
       "supportsTablet": true,
