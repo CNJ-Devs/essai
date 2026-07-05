@@ -12,6 +12,9 @@ export type GenerationKind = z.infer<typeof generationKindSchema>;
 export const generationStatusSchema = z.enum(["running", "succeeded", "failed"]);
 export type GenerationStatus = z.infer<typeof generationStatusSchema>;
 
+export const draftMaxOutputTokensDefault = 65_536;
+export const titleMaxOutputTokensDefault = 96;
+
 export const encryptedApiKeySchema = z.object({
   alg: z.literal("RSA-OAEP-256"),
   ciphertext: z.string().min(1),
@@ -33,11 +36,26 @@ export const encryptedRequestSchema = z.object({
 });
 export type EncryptedRequest = z.infer<typeof encryptedRequestSchema>;
 
-export const providerOptionsSchema = z.object({
-  maxOutputTokens: z.number().int().min(64).max(8192).default(1800),
+const providerOptionsInputSchema = z.object({
+  maxOutputTokens: z.number().int().min(64).optional(),
   temperature: z.number().min(0).max(2).optional(),
   reasoningEffort: z.enum(["none", "low", "medium", "high", "xhigh"]).optional(),
 });
+
+export const providerOptionsSchema = providerOptionsInputSchema
+  .default({})
+  .transform((options) => ({
+    ...options,
+    maxOutputTokens: options.maxOutputTokens ?? draftMaxOutputTokensDefault,
+  }));
+
+const titleProviderOptionsSchema = providerOptionsInputSchema
+  .default({})
+  .transform((options) => ({
+    ...options,
+    maxOutputTokens: options.maxOutputTokens ?? titleMaxOutputTokensDefault,
+  }));
+
 export type ProviderOptions = z.infer<typeof providerOptionsSchema>;
 
 export const requestFingerprintSchema = z
@@ -104,9 +122,7 @@ export const generationCreateRequestSchema = z.object({
   model: z.string().trim().optional(),
   timeoutMs: z.number().int().min(1000).max(240_000).default(240_000),
   ttlSeconds: z.number().int().min(60).max(generationTtlSeconds).default(generationTtlSeconds),
-  options: providerOptionsSchema.default({
-    maxOutputTokens: 1800,
-  }),
+  options: providerOptionsSchema,
   generations: z.array(generationInputSchema).min(1).max(12),
 });
 export type GenerationCreateRequest = z.infer<typeof generationCreateRequestSchema>;
@@ -133,9 +149,7 @@ export const titleCreateRequestSchema = z.object({
   model: z.string().trim().optional(),
   timeoutMs: z.number().int().min(1000).max(240_000).default(60_000),
   ttlSeconds: z.number().int().min(60).max(generationTtlSeconds).default(generationTtlSeconds),
-  options: providerOptionsSchema.default({
-    maxOutputTokens: 96,
-  }),
+  options: titleProviderOptionsSchema,
   payload: titlePayloadSchema,
 });
 export type TitleCreateRequest = z.infer<typeof titleCreateRequestSchema>;

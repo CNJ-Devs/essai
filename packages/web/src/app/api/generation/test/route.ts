@@ -15,7 +15,7 @@ const ROUTE_TERMINATION_BUFFER_MS = 60_000;
 const MAX_TIMEOUT_MS = ROUTE_MAX_DURATION_MS - ROUTE_TERMINATION_BUFFER_MS;
 const DEFAULT_TIMEOUT_MS = MAX_TIMEOUT_MS;
 const FINALIZATION_RESERVE_MS = 15_000;
-const DEFAULT_MAX_OUTPUT_TOKENS = 1800;
+const DEFAULT_MAX_OUTPUT_TOKENS = 65_536;
 
 const providerSchema = z.enum(["openai", "deepseek", "anthropic"]);
 type Provider = z.infer<typeof providerSchema>;
@@ -46,7 +46,6 @@ const requestSchema = z.object({
     .number()
     .int()
     .min(64)
-    .max(8192)
     .default(DEFAULT_MAX_OUTPUT_TOKENS),
   timeoutMs: z
     .number()

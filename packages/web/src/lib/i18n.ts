@@ -240,9 +240,10 @@ export const zhCN = {
     revisionFailed: "改稿失败，请稍后再试。",
   },
   ai: {
-    titleInstructions: "你只负责为一条中文创作碎片起一个短标题，不要输出解释。",
+    titleInstructions:
+      "你只负责为一条中文创作碎片起一个短标题。只输出标题本身，不要解释、标点包装、引号、编号或前后缀。",
     titlePrompt: (content: string) =>
-      `请为这条碎片起一个 6 到 16 个中文字符的标题：\n\n${content}`,
+      `请为这条碎片起一个 6 到 14 个中文字符的标题。标题必须短，不要超过 14 个中文字符。只输出标题本身：\n\n${content}`,
     draftInstructions:
       "你是 EssAI 的成稿引擎。你要把碎片酝酿成可直接使用的中文草稿，保持自然、有判断、可执行。只输出成稿正文，不输出寒暄、承诺、解释或任务复述。",
     revisionInstructions:
@@ -646,9 +647,10 @@ export const enUS: Messages = {
     revisionFailed: "Rewrite failed. Please try again later.",
   },
   ai: {
-    titleInstructions: "You only write a short title for one creative fragment. Do not explain.",
+    titleInstructions:
+      "You only write a short title for one creative fragment. Output the title only, with no explanation, quotes, numbering, prefix, or suffix.",
     titlePrompt: (content) =>
-      `Write a short title, 4 to 10 words, for this fragment:\n\n${content}`,
+      `Write a short title, 4 to 8 words, for this fragment. Keep it short and output only the title:\n\n${content}`,
     draftInstructions:
       "You are EssAI's drafting engine. Turn the fragment into a usable draft with a natural voice, clear judgment, and practical shape. Output only the draft content, with no greetings, promises, explanations, or task recap.",
     revisionInstructions:
