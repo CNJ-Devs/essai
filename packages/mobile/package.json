@@ -40,6 +40,7 @@
     "react-native-reanimated-carousel": "^5.0.0-beta.5",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "4.25.2",
+    "react-native-speed-dial": "^1.0.2",
     "react-native-svg": "15.15.4",
     "react-native-web": "^0.21.2",
     "react-native-worklets": "0.10.0",

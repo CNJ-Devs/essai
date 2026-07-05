@@ -29,6 +29,7 @@ import {
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import Carousel, { type ICarouselInstance } from "react-native-reanimated-carousel";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { SpeedDial } from "react-native-speed-dial";
 import { Toaster, toast } from "sonner-native";
 import type {
   KeyboardEvent,
@@ -70,6 +71,7 @@ import {
   KeyRound,
   Languages,
   LibraryBig,
+  Mic,
   Palette,
   PencilLine,
   Plus,
@@ -95,6 +97,7 @@ type TextProviderId = "openai" | "deepseek" | "anthropic";
 type ProviderId = TextProviderId | "elevenlabs";
 type ProviderCapability = "text" | "stt";
 type VoiceInputMode = "native" | "cloud";
+type VoiceCapturePhase = "listening" | "processing" | "done";
 
 type RootStackParamList = {
   Home: undefined;
@@ -393,7 +396,9 @@ const mobileResources = {
         saveRevision: "保存修订",
         collectRule: "收录",
         gotIt: "知道了",
+        manualInput: "文字输入",
         more: "更多",
+        voiceInput: "语音输入",
       },
       common: {
         draftCount: "{{count}} 稿",
@@ -414,6 +419,16 @@ const mobileResources = {
         modelRequired: "先在设置里添加服务密钥并选择模型，再开始出稿。",
         modelRequiredTitle: "还没有可用模型",
         recoveryFailed: "生成服务暂时无法连接，这次任务没有完成。",
+      },
+      voiceCapture: {
+        cancel: "取消",
+        doneTitle: "整理好了",
+        fakeTranscript: "刚才想到一个新的选题：人在压力很大的时候，真正需要的不是立刻给自己一个答案，而是先把混乱的感受说清楚。",
+        listeningDescription: "先随便说，停下后会把声音整理成文字。",
+        listeningTitle: "正在听",
+        processingDescription: "正在把语音转成可以继续编辑的碎片。",
+        processingTitle: "整理中",
+        stop: "停止",
       },
       pages: {
         fragments: {
@@ -688,7 +703,9 @@ const mobileResources = {
         saveRevision: "Save Revision",
         collectRule: "Add",
         gotIt: "Got it",
+        manualInput: "Text",
         more: "More",
+        voiceInput: "Voice",
       },
       common: {
         draftCount: "{{count}} drafts",
@@ -709,6 +726,16 @@ const mobileResources = {
         modelRequired: "Add a service key and choose a model in Settings before drafting.",
         modelRequiredTitle: "No model available",
         recoveryFailed: "The generation service is unreachable. This task was not completed.",
+      },
+      voiceCapture: {
+        cancel: "Cancel",
+        doneTitle: "Ready",
+        fakeTranscript: "I just thought of a new topic: when people are under pressure, what they need first is not an immediate answer, but a clearer way to name the confusion.",
+        listeningDescription: "Speak freely. When you stop, the voice will be turned into editable text.",
+        listeningTitle: "Listening",
+        processingDescription: "Turning your voice into a fragment you can keep editing.",
+        processingTitle: "Processing",
+        stop: "Stop",
       },
       pages: {
         fragments: {
@@ -1275,8 +1302,10 @@ export default function App() {
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [quickCreateOpen, setQuickCreateOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeInitialContent, setComposeInitialContent] = useState("");
+  const [voiceCaptureOpen, setVoiceCaptureOpen] = useState(false);
   const [schemeEditorOpen, setSchemeEditorOpen] = useState(false);
   const [lawEditorOpen, setLawEditorOpen] = useState(false);
   const [editingSchemeId, setEditingSchemeId] = useState<string | null>(null);
@@ -2191,6 +2220,7 @@ export default function App() {
   }
 
   function openComposeSheet(initialContent = "") {
+    setQuickCreateOpen(false);
     setComposeInitialContent(initialContent);
     setComposeOpen(true);
   }
@@ -2198,6 +2228,16 @@ export default function App() {
   function closeComposeSheet() {
     setComposeOpen(false);
     setComposeInitialContent("");
+  }
+
+  function openVoiceCapture() {
+    setQuickCreateOpen(false);
+    setVoiceCaptureOpen(true);
+  }
+
+  function completeVoiceCapture(transcript: string) {
+    setVoiceCaptureOpen(false);
+    openComposeSheet(transcript);
   }
 
   function pushStack<RouteName extends keyof RootStackParamList>(
@@ -2313,7 +2353,12 @@ export default function App() {
                   <BottomNav
                     activeTab={activeTab}
                     onChange={setActiveTab}
-                    onCreateFragment={() => openComposeSheet()}
+                  />
+                  <QuickCreateSpeedDial
+                    open={quickCreateOpen}
+                    onChangeOpen={setQuickCreateOpen}
+                    onOpenText={() => openComposeSheet()}
+                    onOpenVoice={openVoiceCapture}
                   />
                 </View>
 
@@ -2799,6 +2844,11 @@ export default function App() {
           pushStack("FragmentDetail", { id });
         }}
       />
+      <VoiceCaptureModal
+        visible={voiceCaptureOpen}
+        onClose={() => setVoiceCaptureOpen(false)}
+        onComplete={completeVoiceCapture}
+      />
       <SchemeEditor
         initialScheme={editingScheme}
         laws={laws}
@@ -2859,11 +2909,9 @@ function AppToaster({ isDark }: { isDark: boolean }) {
 function BottomNav({
   activeTab,
   onChange,
-  onCreateFragment,
 }: {
   activeTab: TabId;
   onChange: (tab: TabId) => void;
-  onCreateFragment: () => void;
 }) {
   const leftTabs = tabs.slice(0, 2);
   const rightTabs = tabs.slice(2);
@@ -2899,14 +2947,99 @@ function BottomNav({
           />
         ))}
       </View>
-      <Pressable
-        aria-label={tx("compose.title")}
-        style={styles.bottomNavCreateButton}
-        onPress={onCreateFragment}
-      >
-        <Plus color={colors.primaryText} size={29} strokeWidth={2.8} />
-      </Pressable>
     </View>
+  );
+}
+
+function QuickCreateSpeedDial({
+  onChangeOpen,
+  onOpenText,
+  onOpenVoice,
+  open,
+}: {
+  onChangeOpen: (open: boolean) => void;
+  onOpenText: () => void;
+  onOpenVoice: () => void;
+  open: boolean;
+}) {
+  const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const fabSize = 64;
+  const actionSize = 54;
+  const plusIcon = <QuickCreatePlusIcon open={open} />;
+
+  return (
+    <SpeedDial
+      actionSize={actionSize}
+      actions={[
+        {
+          backgroundColor: colors.card,
+          buttonStyle: styles.quickCreateActionButton,
+          icon: <FileText color={colors.text} size={22} strokeWidth={2.35} />,
+          id: "text",
+          onPress: onOpenText,
+        },
+        {
+          backgroundColor: colors.primary,
+          buttonStyle: styles.quickCreateActionButton,
+          icon: <Mic color={colors.primaryText} size={23} strokeWidth={2.45} />,
+          id: "voice",
+          onPress: onOpenVoice,
+        },
+      ]}
+      backdropColor={colors.text}
+      backdropOpacity={0.16}
+      closeIcon={plusIcon}
+      fabSize={fabSize}
+      isOpen={open}
+      layout="radial"
+      mainButtonColor={colors.primary}
+      mainButtonStyle={styles.quickCreateMainButton}
+      onToggle={onChangeOpen}
+      openIcon={plusIcon}
+      radius={84}
+      startAngle={-130}
+      endAngle={-50}
+      style={[
+        styles.quickCreateSpeedDial,
+        {
+          bottom: Math.max(8, insets.bottom + 6) + 16,
+          right: Math.max(0, width / 2 - fabSize / 2),
+        },
+      ]}
+    />
+  );
+}
+
+function QuickCreatePlusIcon({ open }: { open: boolean }) {
+  const rotation = useRef(new Animated.Value(open ? 1 : 0)).current;
+
+  useEffect(() => {
+    Animated.timing(rotation, {
+      duration: 180,
+      easing: Easing.out(Easing.cubic),
+      toValue: open ? 1 : 0,
+      useNativeDriver: true,
+    }).start();
+  }, [open, rotation]);
+
+  return (
+    <Animated.View
+      style={[
+        {
+          transform: [
+            {
+              rotate: rotation.interpolate({
+                inputRange: [0, 1],
+                outputRange: ["0deg", "45deg"],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      <Plus color={colors.primaryText} size={29} strokeWidth={2.8} />
+    </Animated.View>
   );
 }
 
@@ -2933,6 +3066,211 @@ function BottomNavItem({
         {tx(tab.labelKey)}
       </Text>
     </Pressable>
+  );
+}
+
+function VoiceCaptureModal({
+  onClose,
+  onComplete,
+  visible,
+}: {
+  onClose: () => void;
+  onComplete: (transcript: string) => void;
+  visible: boolean;
+}) {
+  const [phase, setPhase] = useState<VoiceCapturePhase>("listening");
+  const [progress, setProgress] = useState(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  function clearTimers() {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    timersRef.current.forEach((timer) => clearTimeout(timer));
+    timersRef.current = [];
+  }
+
+  useEffect(() => {
+    if (!visible) {
+      clearTimers();
+      return undefined;
+    }
+
+    setPhase("listening");
+    setProgress(0);
+
+    return clearTimers;
+  }, [visible]);
+
+  function cancelCapture() {
+    clearTimers();
+    onClose();
+  }
+
+  function finishFakeTranscript() {
+    setProgress(1);
+    setPhase("done");
+    timersRef.current.push(
+      setTimeout(() => {
+        onComplete(tx("voiceCapture.fakeTranscript"));
+      }, 520),
+    );
+  }
+
+  function processCapture() {
+    if (phase !== "listening") return;
+
+    setPhase("processing");
+    setProgress(0.08);
+
+    intervalRef.current = setInterval(() => {
+      setProgress((current) => Math.min(0.97, current + 0.055));
+    }, 160);
+
+    timersRef.current.push(
+      setTimeout(() => {
+        clearTimers();
+        finishFakeTranscript();
+      }, 2400),
+    );
+  }
+
+  const title =
+    phase === "listening"
+      ? tx("voiceCapture.listeningTitle")
+      : phase === "processing"
+        ? tx("voiceCapture.processingTitle")
+        : tx("voiceCapture.doneTitle");
+  const description =
+    phase === "listening"
+      ? tx("voiceCapture.listeningDescription")
+      : tx("voiceCapture.processingDescription");
+
+  return (
+    <Modal
+      {...androidSystemBarModalProps}
+      animationType="fade"
+      transparent
+      visible={visible}
+      onRequestClose={cancelCapture}
+    >
+      <View style={styles.voiceModalBackdrop}>
+        <View style={styles.voiceModalCard}>
+          <VoicePulse active={phase === "listening"} />
+          <Text style={styles.voiceModalTitle}>{title}</Text>
+          <Text style={styles.voiceModalDescription}>{description}</Text>
+
+          {phase !== "listening" ? (
+            <View style={styles.voiceProgressTrack}>
+              <View
+                style={[
+                  styles.voiceProgressFill,
+                  { width: `${Math.round(progress * 100)}%` },
+                ]}
+              />
+            </View>
+          ) : null}
+
+          <View style={styles.voiceModalActions}>
+            <Pressable
+              disabled={phase === "done"}
+              style={styles.outlineButton}
+              onPress={cancelCapture}
+            >
+              <Text style={styles.outlineButtonText}>
+                {tx("voiceCapture.cancel")}
+              </Text>
+            </Pressable>
+            <Pressable
+              disabled={phase !== "listening"}
+              style={[
+                styles.primaryButton,
+                phase !== "listening" && styles.buttonDisabled,
+              ]}
+              onPress={processCapture}
+            >
+              <Text style={styles.primaryButtonText}>
+                {tx("voiceCapture.stop")}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function VoicePulse({ active }: { active: boolean }) {
+  const pulseValues = useRef([
+    new Animated.Value(0),
+    new Animated.Value(0),
+    new Animated.Value(0),
+  ]).current;
+
+  useEffect(() => {
+    if (!active) {
+      pulseValues.forEach((value) => value.setValue(0));
+      return undefined;
+    }
+
+    const animations = pulseValues.map((value, index) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(index * 360),
+          Animated.timing(value, {
+            duration: 1350,
+            easing: Easing.out(Easing.quad),
+            toValue: 1,
+            useNativeDriver: true,
+          }),
+          Animated.timing(value, {
+            duration: 0,
+            toValue: 0,
+            useNativeDriver: true,
+          }),
+        ]),
+      ),
+    );
+
+    animations.forEach((animation) => animation.start());
+
+    return () => {
+      animations.forEach((animation) => animation.stop());
+      pulseValues.forEach((value) => value.setValue(0));
+    };
+  }, [active, pulseValues]);
+
+  return (
+    <View style={styles.voicePulseBox}>
+      {pulseValues.map((value, index) => (
+        <Animated.View
+          key={index}
+          style={[
+            styles.voicePulseRing,
+            {
+              opacity: value.interpolate({
+                inputRange: [0, 0.7, 1],
+                outputRange: [0.28, 0.12, 0],
+              }),
+              transform: [
+                {
+                  scale: value.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.76, 1.78],
+                  }),
+                },
+              ],
+            },
+          ]}
+        />
+      ))}
+      <View style={styles.voicePulseCore}>
+        <Mic color={colors.primaryText} size={30} strokeWidth={2.55} />
+      </View>
+    </View>
   );
 }
 
@@ -9327,6 +9665,26 @@ function createThemedStyles(colors: ThemeColors) {
     shadowOffset: { width: 0, height: 8 },
     zIndex: 40,
   },
+  quickCreateSpeedDial: {
+    position: "absolute",
+    zIndex: 80,
+  },
+  quickCreateMainButton: {
+    borderColor: colors.background,
+    borderWidth: 5,
+    shadowColor: colors.text,
+    shadowOpacity: 0.16,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+  },
+  quickCreateActionButton: {
+    borderColor: colors.background,
+    borderWidth: 4,
+    shadowColor: colors.text,
+    shadowOpacity: 0.14,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 7 },
+  },
   bottomNavItem: {
     alignItems: "center",
     borderRadius: 18,
@@ -9934,6 +10292,88 @@ function createThemedStyles(colors: ThemeColors) {
     flex: 1,
     minHeight: 0,
     position: "relative",
+  },
+  voiceModalBackdrop: {
+    alignItems: "center",
+    backgroundColor: withOpacity(colors.text, 0.22),
+    flex: 1,
+    justifyContent: "center",
+    padding: 24,
+  },
+  voiceModalCard: {
+    alignItems: "center",
+    backgroundColor: colors.card,
+    borderColor: colors.border,
+    borderRadius: 28,
+    borderWidth: 1,
+    gap: 14,
+    maxWidth: 340,
+    padding: 22,
+    width: "100%",
+    shadowColor: colors.text,
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 16 },
+  },
+  voicePulseBox: {
+    alignItems: "center",
+    height: 126,
+    justifyContent: "center",
+    width: 126,
+  },
+  voicePulseRing: {
+    backgroundColor: colors.primary,
+    borderRadius: 999,
+    height: 96,
+    position: "absolute",
+    width: 96,
+  },
+  voicePulseCore: {
+    alignItems: "center",
+    backgroundColor: colors.primary,
+    borderColor: colors.background,
+    borderRadius: 999,
+    borderWidth: 5,
+    height: 76,
+    justifyContent: "center",
+    width: 76,
+    shadowColor: colors.text,
+    shadowOpacity: 0.16,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+  },
+  voiceModalTitle: {
+    color: colors.text,
+    fontSize: 22,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  voiceModalDescription: {
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 22,
+    maxWidth: 270,
+    textAlign: "center",
+  },
+  voiceProgressTrack: {
+    backgroundColor: colors.mutedSurface,
+    borderRadius: 999,
+    height: 8,
+    marginTop: 2,
+    overflow: "hidden",
+    width: "100%",
+  },
+  voiceProgressFill: {
+    backgroundColor: colors.primary,
+    borderRadius: 999,
+    height: "100%",
+  },
+  voiceModalActions: {
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "center",
+    marginTop: 6,
+    width: "100%",
   },
   composeScroll: {
     flex: 1,
