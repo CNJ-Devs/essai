@@ -570,6 +570,8 @@ const mobileResources = {
         description: "一条法则就是一条可复用的创作判断。出稿时，它会和方案一起影响内容的取舍、语气和结构。",
         nameLabel: "名称",
         namePlaceholder: "例如：黄金三秒...",
+        descriptionLabel: "说明",
+        descriptionPlaceholder: "例如：适合强调开头吸引力，让内容更快进入状态。",
         createTitleFallback: "新法则",
         contentLabel: "内容",
         contentPlaceholder: "例如：开头 3 秒内必须让观众知道这条内容和自己有什么关系...",
@@ -832,6 +834,8 @@ const mobileResources = {
         description: "A rule is a reusable creative judgment. It shapes what the draft keeps, removes, and emphasizes.",
         nameLabel: "Name",
         namePlaceholder: "For example: First Three Seconds...",
+        descriptionLabel: "Description",
+        descriptionPlaceholder: "For example: Helps the opening feel clearer and easier to enter.",
         createTitleFallback: "New Rule",
         contentLabel: "Content",
         contentPlaceholder: "For example: The first 3 seconds must show why this matters to the audience...",
@@ -1611,15 +1615,17 @@ export default function App() {
 
   async function createLawFromSchemeEditor(
     title: string,
+    description: string,
     content: string,
     tags: string[],
   ) {
     const now = new Date().toISOString();
     const safeTitle = title.trim() || tx("lawEditor.createTitleFallback");
+    const safeDescription = description.trim();
     const law: Law = {
       id: createId("law"),
       title: safeTitle,
-      description: "",
+      description: safeDescription,
       content,
       tags,
       createdAt: now,
@@ -1631,9 +1637,15 @@ export default function App() {
     return law;
   }
 
-  async function saveLaw(title: string, content: string, tags: string[]) {
+  async function saveLaw(
+    title: string,
+    description: string,
+    content: string,
+    tags: string[],
+  ) {
     const now = new Date().toISOString();
     const safeTitle = title.trim() || tx("lawEditor.createTitleFallback");
+    const safeDescription = description.trim();
     const safeContent = content.trim();
 
     if (editingLawId) {
@@ -1643,6 +1655,7 @@ export default function App() {
         ? {
             ...savedLaw,
             title: safeTitle,
+            description: safeDescription,
             content: safeContent,
             tags,
             updatedAt: now,
@@ -1659,6 +1672,7 @@ export default function App() {
             ? {
                 ...law,
                 title: safeTitle,
+                description: safeDescription,
                 content: safeContent,
                 tags,
                 updatedAt: now,
@@ -1673,7 +1687,7 @@ export default function App() {
       const law: Law = {
         id: createId("law"),
         title: safeTitle,
-        description: "",
+        description: safeDescription,
         content: safeContent,
         tags,
         createdAt: now,
@@ -2446,9 +2460,9 @@ export default function App() {
         visible={lawEditorOpen}
         onClose={() => setLawEditorOpen(false)}
         onDismiss={() => setEditingLawId(null)}
-        onSubmit={async (name, content, tags) => {
+        onSubmit={async (name, description, content, tags) => {
           const wasEditing = Boolean(editingLawId);
-          const id = await saveLaw(name, content, tags);
+          const id = await saveLaw(name, description, content, tags);
 
           if (!wasEditing) {
             pushStack("LawDetail", { id });
@@ -3867,7 +3881,7 @@ function LawCard({
             </View>
           ) : null}
           <Text style={styles.gridCardBody} numberOfLines={5}>
-            {summarize(law.content, 160)}
+            {summarize(getLawHumanDescription(law) || law.content, 160)}
           </Text>
         </View>
         <View style={styles.gridCardFooter}>
@@ -4192,7 +4206,12 @@ function SchemeEditor({
   visible: boolean;
   onClose: () => void;
   onDismiss: () => void;
-  onCreateLaw: (name: string, content: string, tags: string[]) => Promise<Law>;
+  onCreateLaw: (
+    name: string,
+    description: string,
+    content: string,
+    tags: string[],
+  ) => Promise<Law>;
   onSubmit: (name: string, description: string, lawIds: string[]) => void;
 }) {
   const [availableLaws, setAvailableLaws] = useState(laws);
@@ -4202,12 +4221,14 @@ function SchemeEditor({
   );
   const [lawIds, setLawIds] = useState<string[]>(initialScheme?.lawIds ?? []);
   const [quickLawName, setQuickLawName] = useState("");
+  const [quickLawDescription, setQuickLawDescription] = useState("");
   const [quickLawContent, setQuickLawContent] = useState("");
   const [quickLawTags, setQuickLawTags] = useState<string[]>([]);
   const [quickLawError, setQuickLawError] = useState<string | null>(null);
   const schemeNameInputRef = useRef<TextInput | null>(null);
   const schemeContentInputRef = useRef<TextInput | null>(null);
   const quickLawNameInputRef = useRef<TextInput | null>(null);
+  const quickLawDescriptionInputRef = useRef<TextInput | null>(null);
   const quickLawContentInputRef = useRef<TextInput | null>(null);
   const insets = useSafeAreaInsets();
   const descriptionInputHeight = useFormTextAreaHeight(0.18, 128, 220);
@@ -4245,6 +4266,7 @@ function SchemeEditor({
     setDescription(initialScheme?.content ?? "");
     setLawIds(initialScheme?.lawIds ?? []);
     setQuickLawName("");
+    setQuickLawDescription("");
     setQuickLawContent("");
     setQuickLawTags([]);
     setQuickLawError(null);
@@ -4269,6 +4291,7 @@ function SchemeEditor({
 
     const law = await onCreateLaw(
       nextName,
+      quickLawDescription.trim(),
       nextContent,
       quickLawTags,
     );
@@ -4278,6 +4301,7 @@ function SchemeEditor({
       current.includes(law.id) ? current : [law.id, ...current],
     );
     setQuickLawName("");
+    setQuickLawDescription("");
     setQuickLawContent("");
     setQuickLawTags([]);
     setQuickLawError(null);
@@ -4390,7 +4414,7 @@ function SchemeEditor({
                           </View>
                         </View>
                         <Text style={styles.lawPickBody} numberOfLines={2}>
-                          {law.content}
+                          {getLawHumanDescription(law) || law.content}
                         </Text>
                       </Pressable>
                     );
@@ -4449,6 +4473,21 @@ function SchemeEditor({
                 </View>
               </View>
 
+              <Text style={styles.inputLabel}>
+                {tx("lawEditor.descriptionLabel")}
+              </Text>
+              <TextInput
+                ref={quickLawDescriptionInputRef}
+                value={quickLawDescription}
+                onChangeText={setQuickLawDescription}
+                onFocus={() =>
+                  handleInputFocus(quickLawDescriptionInputRef.current)
+                }
+                placeholder={tx("lawEditor.descriptionPlaceholder")}
+                placeholderTextColor={colors.muted}
+                style={styles.singleInput}
+              />
+
               <Text style={styles.inputLabel}>{tx("lawEditor.contentLabel")}</Text>
               <TextInput
                 ref={quickLawContentInputRef}
@@ -4505,12 +4544,19 @@ function LawEditor({
   visible: boolean;
   onClose: () => void;
   onDismiss: () => void;
-  onSubmit: (name: string, content: string, tags: string[]) => void;
+  onSubmit: (
+    name: string,
+    description: string,
+    content: string,
+    tags: string[],
+  ) => void;
 }) {
   const [name, setName] = useState(initialLaw?.title ?? "");
+  const [description, setDescription] = useState(initialLaw?.description ?? "");
   const [content, setContent] = useState(initialLaw?.content ?? "");
   const [tags, setTags] = useState<string[]>(initialLaw?.tags ?? []);
   const lawNameInputRef = useRef<TextInput | null>(null);
+  const lawDescriptionInputRef = useRef<TextInput | null>(null);
   const lawContentInputRef = useRef<TextInput | null>(null);
   const insets = useSafeAreaInsets();
   const contentInputHeight = useFormTextAreaHeight(0.24, 150, 280);
@@ -4537,6 +4583,7 @@ function LawEditor({
     if (!visible) return;
 
     setName(initialLaw?.title ?? "");
+    setDescription(initialLaw?.description ?? "");
     setContent(initialLaw?.content ?? "");
     setTags(initialLaw?.tags ?? []);
   }, [visible, initialLaw?.id]);
@@ -4589,6 +4636,18 @@ function LawEditor({
               placeholderTextColor={colors.muted}
               style={styles.singleInput}
             />
+            <Text style={styles.inputLabel}>
+              {tx("lawEditor.descriptionLabel")}
+            </Text>
+            <TextInput
+              ref={lawDescriptionInputRef}
+              value={description}
+              onChangeText={setDescription}
+              onFocus={() => handleInputFocus(lawDescriptionInputRef.current)}
+              placeholder={tx("lawEditor.descriptionPlaceholder")}
+              placeholderTextColor={colors.muted}
+              style={styles.singleInput}
+            />
             <Text style={styles.inputLabel}>{tx("lawEditor.contentLabel")}</Text>
             <TextInput
               ref={lawContentInputRef}
@@ -4617,6 +4676,7 @@ function LawEditor({
               onPress={() =>
                 onSubmit(
                   name.trim(),
+                  description.trim(),
                   content.trim(),
                   tags,
                 )
@@ -6095,6 +6155,11 @@ function SchemeDetail({
             boundLaws.map((law) => (
               <View key={law.id} style={styles.lawDetailCard}>
                 <Text style={styles.gridCardTitle}>{law.title}</Text>
+                {getLawHumanDescription(law) ? (
+                  <Text style={styles.gridCardBody}>
+                    {getLawHumanDescription(law)}
+                  </Text>
+                ) : null}
                 <Text style={styles.gridCardBody}>{law.content}</Text>
               </View>
             ))
@@ -6171,6 +6236,17 @@ function LawDetail({
               </Text>
             ))}
           </View>
+          {getLawHumanDescription(law) ? (
+            <>
+              <Text style={styles.sectionTitle}>
+                {tx("lawEditor.descriptionLabel")}
+              </Text>
+              <Text style={styles.paperSurface}>
+                {getLawHumanDescription(law)}
+              </Text>
+            </>
+          ) : null}
+          <Text style={styles.sectionTitle}>{tx("lawEditor.contentLabel")}</Text>
           <Text style={styles.paperSurface}>{law.content}</Text>
         </ScrollView>
         <View style={styles.modalFooterRow}>
@@ -6561,6 +6637,10 @@ function summarize(value: string, maxLength: number) {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, maxLength)}...`;
+}
+
+function getLawHumanDescription(law: Pick<Law, "description">) {
+  return law.description.trim();
 }
 
 function formatDate(value: string) {
