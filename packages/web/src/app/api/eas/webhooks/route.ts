@@ -5,7 +5,9 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 const androidReleaseTagPattern = /^essai-android-v\d+\.\d+\.\d+$/;
-const githubEventType = "eas-android-build-finished";
+const iosReleaseTagPattern = /^essai-ios-v\d+\.\d+\.\d+$/;
+const androidGithubEventType = "eas-android-build-finished";
+const iosGithubEventType = "eas-ios-build-finished";
 
 const easBuildWebhookSchema = z
   .object({
@@ -94,14 +96,29 @@ export async function POST(request: Request) {
   const payload = parsed.data;
   const releaseTag = payload.metadata?.message;
 
-  if (payload.platform !== "android") {
-    return jsonIgnored({ reason: "non_android_platform", startedAt });
-  }
-
   if (payload.status !== "finished") {
-    return jsonIgnored({ reason: `android_build_${payload.status}`, startedAt });
+    return jsonIgnored({
+      reason: `${payload.platform}_build_${payload.status}`,
+      startedAt,
+    });
   }
 
+  if (payload.platform === "android") {
+    return handleAndroidBuild({ payload, releaseTag, startedAt });
+  }
+
+  return handleIosBuild({ payload, releaseTag, startedAt });
+}
+
+async function handleAndroidBuild({
+  payload,
+  releaseTag,
+  startedAt,
+}: {
+  payload: z.infer<typeof easBuildWebhookSchema>;
+  releaseTag: string | undefined;
+  startedAt: number;
+}) {
   if (!releaseTag || !androidReleaseTagPattern.test(releaseTag)) {
     return jsonIgnored({ reason: "missing_or_invalid_android_release_tag", startedAt });
   }
@@ -116,24 +133,81 @@ export async function POST(request: Request) {
   }
 
   try {
-    const dispatchTokenExpiry = await dispatchAndroidBuild({
-      appBuildVersion: payload.metadata?.appBuildVersion ?? null,
-      appIdentifier: payload.metadata?.appIdentifier ?? null,
-      appVersion: payload.metadata?.appVersion ?? null,
-      buildDetailsPageUrl: payload.buildDetailsPageUrl ?? null,
-      buildId: payload.id,
-      buildProfile: payload.metadata?.buildProfile ?? null,
-      buildUrl: payload.artifacts.buildUrl,
-      distribution: payload.metadata?.distribution ?? null,
-      gitCommitHash: payload.metadata?.gitCommitHash ?? null,
-      releaseTag,
+    const dispatchTokenExpiry = await dispatchGithubEvent({
+      eventType: androidGithubEventType,
+      payload: {
+        appBuildVersion: payload.metadata?.appBuildVersion ?? null,
+        appIdentifier: payload.metadata?.appIdentifier ?? null,
+        appVersion: payload.metadata?.appVersion ?? null,
+        buildDetailsPageUrl: payload.buildDetailsPageUrl ?? null,
+        buildId: payload.id,
+        buildProfile: payload.metadata?.buildProfile ?? null,
+        buildUrl: payload.artifacts.buildUrl,
+        distribution: payload.metadata?.distribution ?? null,
+        gitCommitHash: payload.metadata?.gitCommitHash ?? null,
+        releaseTag,
+      },
     });
 
     return Response.json({
       ok: true,
       dispatched: true,
       dispatchTokenExpiry,
-      eventType: githubEventType,
+      eventType: androidGithubEventType,
+      releaseTag,
+      durationMs: Date.now() - startedAt,
+    });
+  } catch (error) {
+    return jsonError({
+      code: "github_dispatch_failed",
+      message: error instanceof Error ? error.message : "GitHub dispatch failed.",
+      startedAt,
+      status: 500,
+    });
+  }
+}
+
+async function handleIosBuild({
+  payload,
+  releaseTag,
+  startedAt,
+}: {
+  payload: z.infer<typeof easBuildWebhookSchema>;
+  releaseTag: string | undefined;
+  startedAt: number;
+}) {
+  if (!releaseTag || !iosReleaseTagPattern.test(releaseTag)) {
+    return jsonIgnored({ reason: "missing_or_invalid_ios_release_tag", startedAt });
+  }
+
+  if (
+    payload.metadata?.buildProfile !== "production" ||
+    payload.metadata?.distribution !== "store"
+  ) {
+    return jsonIgnored({ reason: "non_store_ios_build", startedAt });
+  }
+
+  try {
+    const dispatchTokenExpiry = await dispatchGithubEvent({
+      eventType: iosGithubEventType,
+      payload: {
+        appBuildVersion: payload.metadata?.appBuildVersion ?? null,
+        appIdentifier: payload.metadata?.appIdentifier ?? null,
+        appVersion: payload.metadata?.appVersion ?? null,
+        buildDetailsPageUrl: payload.buildDetailsPageUrl ?? null,
+        buildId: payload.id,
+        buildProfile: payload.metadata?.buildProfile ?? null,
+        distribution: payload.metadata?.distribution ?? null,
+        gitCommitHash: payload.metadata?.gitCommitHash ?? null,
+        releaseTag,
+      },
+    });
+
+    return Response.json({
+      ok: true,
+      dispatched: true,
+      dispatchTokenExpiry,
+      eventType: iosGithubEventType,
       releaseTag,
       durationMs: Date.now() - startedAt,
     });
@@ -168,17 +242,12 @@ function verifyExpoSignature({
   return timingSafeEqual(signatureBuffer, expectedBuffer);
 }
 
-async function dispatchAndroidBuild(payload: {
-  appBuildVersion: string | null;
-  appIdentifier: string | null;
-  appVersion: string | null;
-  buildDetailsPageUrl: string | null;
-  buildId: string;
-  buildProfile: string | null;
-  buildUrl: string;
-  distribution: string | null;
-  gitCommitHash: string | null;
-  releaseTag: string;
+async function dispatchGithubEvent({
+  eventType,
+  payload,
+}: {
+  eventType: typeof androidGithubEventType | typeof iosGithubEventType;
+  payload: Record<string, string | null>;
 }) {
   const token = process.env.GITHUB_DISPATCH_TOKEN;
   const repository = process.env.GITHUB_DISPATCH_REPOSITORY || "CNJ-Devs/essai";
@@ -192,7 +261,7 @@ async function dispatchAndroidBuild(payload: {
     {
       body: JSON.stringify({
         client_payload: payload,
-        event_type: githubEventType,
+        event_type: eventType,
       }),
       headers: {
         Accept: "application/vnd.github+json",

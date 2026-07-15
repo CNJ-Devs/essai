@@ -1,0 +1,75 @@
+name: Submit iOS Build to TestFlight
+
+on:
+  repository_dispatch:
+    types:
+      - eas-ios-build-finished
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "iOS tag, for example essai-ios-v0.1.0"
+        required: true
+        type: string
+      eas_build_id:
+        description: "Completed EAS iOS build ID"
+        required: true
+        type: string
+      eas_build_url:
+        description: "Optional EAS build details URL"
+        required: false
+        type: string
+
+concurrency:
+  group: submit-ios-testflight-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.eas_build_id || github.event.client_payload.buildId }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  EAS_BUILD_ID: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.eas_build_id || github.event.client_payload.buildId }}
+  EAS_BUILD_URL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.eas_build_url || github.event.client_payload.buildDetailsPageUrl }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || github.event.client_payload.releaseTag }}
+
+jobs:
+  submit:
+    name: Submit iOS build to TestFlight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate dispatch payload
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$RELEASE_TAG" =~ ^essai-ios-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "RELEASE_TAG must match essai-ios-vX.Y.Z; got $RELEASE_TAG"
+            exit 1
+          fi
+
+          if [[ ! "$EAS_BUILD_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            echo "EAS_BUILD_ID must be an EAS build UUID; got $EAS_BUILD_ID"
+            exit 1
+          fi
+
+      - name: Checkout submission configuration
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v9
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Submit build to TestFlight
+        working-directory: packages/mobile
+        run: eas submit --platform ios --profile production --id "$EAS_BUILD_ID" --non-interactive
